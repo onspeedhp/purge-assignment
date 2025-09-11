@@ -3,6 +3,7 @@ use std::env;
 use store::Store;
 use tracing::info;
 use tracing_subscriber;
+use redis::Client as RedisClient;
 
 mod routes;
 mod auth;
@@ -17,11 +18,14 @@ async fn main() -> std::io::Result<()> {
 
     if let Err(e) = dotenv::from_path("backend/.env") {
         eprintln!("Warning: Could not load backend/.env file: {}", e);
-        eprintln!("Make sure backend/.env exists with DATABASE_URL and JWT_SECRET");
+        eprintln!("Make sure backend/.env exists with DATABASE_URL, JWT_SECRET, and REDIS_URL");
     }
     
     let database_url = env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
+    
+    let redis_url = env::var("REDIS_URL")
+        .unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
     
     info!("Connecting to database... {}", database_url);
     let pool = sqlx::PgPool::connect(&database_url)
@@ -31,10 +35,17 @@ async fn main() -> std::io::Result<()> {
     info!("Database connected successfully!");
     let store = Store::new(pool);
 
+    info!("Connecting to Redis... {}", redis_url);
+    let redis_client = RedisClient::open(redis_url)
+        .expect("Failed to create Redis client");
+    
+    info!("Redis client created successfully!");
+
     info!("Starting server on http://127.0.0.1:8080");
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(store.clone()))
+            .app_data(web::Data::new(redis_client.clone()))
             .wrap(tracing_actix_web::TracingLogger::default())
             .service(sign_up)  
             .service(sign_in)
