@@ -34,6 +34,10 @@ pub mod solana;
 pub mod tss;
 pub mod utils;
 
+// API tests module
+#[cfg(test)]
+mod api_tests;
+
 // MPC Core functionality - equivalent to TypeScript exports
 pub use mpc::{
     create_mpc_signer, create_mpc_signer_from_secret_key, MPCKeypair, MPCSigner, TSSSigner,

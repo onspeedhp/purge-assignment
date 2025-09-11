@@ -160,35 +160,3 @@ pub fn bytes_to_base58(bytes: &[u8]) -> String {
 pub fn base58_to_bytes(s: &str) -> Result<Vec<u8>, Error> {
     bs58::decode(s).into_vec().map_err(Error::from)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hex_conversion() {
-        let bytes = [1, 2, 3, 4, 5];
-        let hex_str = bytes_to_hex(&bytes);
-        assert_eq!(hex_str, "0102030405");
-
-        let decoded = hex_to_bytes(&hex_str).unwrap();
-        assert_eq!(decoded, bytes);
-    }
-
-    #[test]
-    fn test_base58_conversion() {
-        let bytes = [1, 2, 3, 4, 5];
-        let base58_str = bytes_to_base58(&bytes);
-
-        let decoded = base58_to_bytes(&base58_str).unwrap();
-        assert_eq!(decoded, bytes);
-    }
-
-    #[test]
-    fn test_pubkey_conversion() {
-        let pubkey = Pubkey::new_unique();
-        let string = pubkey_to_string(&pubkey);
-        let decoded = string_to_pubkey(&string).unwrap();
-        assert_eq!(decoded, pubkey);
-    }
-}

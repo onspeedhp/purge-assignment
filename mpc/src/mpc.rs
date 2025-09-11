@@ -8,6 +8,7 @@ use solana_sdk::{
     signature::{Signature, Signer, SignerError},
     transaction::Transaction,
 };
+use std::fmt;
 
 /// MPC Signer interface for multi-party computation
 /// Equivalent to MPCSigner interface in TypeScript
@@ -16,6 +17,13 @@ pub struct MPCSigner {
     pub public_key: Pubkey,
     pub secret_key: [u8; 32], // 32-byte seed for Ed25519
     pub wasm_available: bool, // Track if WASM module is available (like TypeScript)
+}
+
+impl fmt::Display for MPCSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MPCSigner(public_key: {}, wasm_available: {})", 
+               self.public_key, self.wasm_available)
+    }
 }
 
 impl MPCSigner {
@@ -126,6 +134,12 @@ pub struct MPCKeypair {
     mpc_signer: MPCSigner,
 }
 
+impl fmt::Display for MPCKeypair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MPCKeypair(public_key: {})", self.public_key)
+    }
+}
+
 impl MPCKeypair {
     /// Create a new MPC keypair
     /// Equivalent to new MPCKeypair(mpcSigner) in TypeScript
@@ -170,11 +184,8 @@ impl MPCKeypair {
     }
 
     /// Sign a message (equivalent to sign() method in TypeScript MPCKeypair)
-    pub fn sign_message(&self, message: &[u8]) -> Signature {
-        self.mpc_signer.sign(message).unwrap_or_else(|_| {
-            // Return a dummy signature if signing fails
-            Signature::from([0u8; 64])
-        })
+    pub async fn sign(&self, message: &[u8]) -> Result<Signature, ed25519_dalek::SignatureError> {
+        self.mpc_signer.sign(message)
     }
 
     /// Sign a transaction (equivalent to signTransaction() method in TypeScript MPCKeypair)
@@ -183,7 +194,7 @@ impl MPCKeypair {
         mut tx: Transaction,
     ) -> Result<Transaction, ed25519_dalek::SignatureError> {
         let msg = tx.message.serialize();
-        let sig = self.mpc_signer.sign(&msg)?;
+        let sig = self.sign(&msg).await?;
         tx.signatures.push(sig);
         Ok(tx)
     }
@@ -415,328 +426,4 @@ impl EnhancedMPCSigner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-
-    #[test]
-    fn test_mpc_signer_creation() {
-        let signer = create_mpc_signer();
-        assert_eq!(signer.public_key.to_bytes().len(), 32);
-        assert_eq!(signer.secret_key.len(), 32);
-        assert!(!signer.wasm_available); // Should fallback to ed25519-dalek
-    }
-
-    #[test]
-    fn test_mpc_signer_from_secret_key() {
-        let secret_key = [1u8; 32];
-        let signer = create_mpc_signer_from_secret_key(secret_key).unwrap();
-        assert_eq!(signer.secret_key, secret_key);
-        assert!(!signer.wasm_available); // Should fallback to ed25519-dalek
-    }
-
-    #[test]
-    fn test_mpc_signer_consistency() {
-        let secret_key = [42u8; 32];
-        let signer1 = create_mpc_signer_from_secret_key(secret_key).unwrap();
-        let signer2 = create_mpc_signer_from_secret_key(secret_key).unwrap();
-
-        // Same secret key should produce same public key
-        assert_eq!(signer1.public_key, signer2.public_key);
-
-        // Same secret key should produce same signature for same message
-        let message = b"consistency test";
-        let sig1 = signer1.sign(message).unwrap();
-        let sig2 = signer2.sign(message).unwrap();
-        assert_eq!(sig1, sig2);
-    }
-
-    #[test]
-    fn test_mpc_signer_different_messages() {
-        let signer = create_mpc_signer();
-        let message1 = b"message one";
-        let message2 = b"message two";
-
-        let sig1 = signer.sign(message1).unwrap();
-        let sig2 = signer.sign(message2).unwrap();
-
-        // Different messages should produce different signatures
-        assert_ne!(sig1, sig2);
-
-        // Each signature should only verify for its own message
-        assert!(signer.verify(message1, &sig1));
-        assert!(signer.verify(message2, &sig2));
-        assert!(!signer.verify(message1, &sig2));
-        assert!(!signer.verify(message2, &sig1));
-    }
-
-    #[test]
-    fn test_mpc_signer_verification_edge_cases() {
-        let signer = create_mpc_signer();
-        let message = b"test message";
-        let signature = signer.sign(message).unwrap();
-
-        // Verify with correct message
-        assert!(signer.verify(message, &signature));
-
-        // Verify with empty message
-        let empty_sig = signer.sign(b"").unwrap();
-        assert!(signer.verify(b"", &empty_sig));
-        assert!(!signer.verify(message, &empty_sig));
-
-        // Verify with very long message
-        let long_message = vec![0u8; 10000];
-        let long_sig = signer.sign(&long_message).unwrap();
-        assert!(signer.verify(&long_message, &long_sig));
-    }
-
-    #[test]
-    fn test_mpc_keypair_signing() {
-        let keypair = MPCKeypair::new();
-        let message = b"test message";
-        let signature = keypair.try_sign_message(message).unwrap();
-
-        // Verify the signature
-        let verifying_key = VerifyingKey::from_bytes(&keypair.public_key.to_bytes()).unwrap();
-        let signature_bytes: [u8; 64] = signature.as_ref().try_into().unwrap();
-        let ed25519_signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
-        assert!(verifying_key
-            .verify_strict(message, &ed25519_signature)
-            .is_ok());
-    }
-
-    #[test]
-    fn test_mpc_keypair_signer_trait() {
-        let keypair = MPCKeypair::new();
-        let message = b"signer trait test";
-
-        // Test try_pubkey
-        let pubkey = keypair.try_pubkey().unwrap();
-        assert_eq!(pubkey, keypair.public_key);
-
-        // Test try_sign_message
-        let signature = keypair.try_sign_message(message).unwrap();
-        assert_eq!(signature.as_ref().len(), 64);
-
-        // Test is_interactive
-        assert!(!keypair.is_interactive());
-
-        // Test verification
-        assert!(keypair.verify(message, &signature));
-    }
-
-    #[test]
-    fn test_mpc_keypair_from_public_key() {
-        let original_keypair = MPCKeypair::new();
-        let public_key = original_keypair.public_key;
-
-        let keypair_from_pubkey = MPCKeypair::from_public_key(public_key);
-        assert_eq!(keypair_from_pubkey.public_key, public_key);
-
-        // Should have dummy secret key
-        assert_eq!(keypair_from_pubkey.secret_key, [0u8; 32]);
-    }
-
-    #[test]
-    fn test_tss_signer_creation() {
-        let tss_signer = TSSSigner::new(3);
-        assert_eq!(tss_signer.public_key.to_bytes().len(), 32);
-        assert_eq!(tss_signer.threshold, 3);
-        assert_eq!(tss_signer.secret_key.len(), 32);
-    }
-
-    #[test]
-    fn test_tss_signer_signing() {
-        let tss_signer = TSSSigner::new(2);
-        let message = b"test message";
-        let signature = tss_signer.sign(message).unwrap();
-        assert!(tss_signer.verify(message, &signature));
-    }
-
-    #[test]
-    fn test_tss_signer_from_secret_key() {
-        let secret_key = [123u8; 32];
-        let threshold = 5;
-
-        let tss_signer = TSSSigner::from_secret_key(secret_key, threshold).unwrap();
-        assert_eq!(tss_signer.secret_key, secret_key);
-        assert_eq!(tss_signer.threshold, threshold);
-        assert_eq!(tss_signer.public_key.to_bytes().len(), 32);
-    }
-
-    #[test]
-    fn test_tss_signer_different_thresholds() {
-        let secret_key = [42u8; 32];
-        let threshold1 = 2;
-        let threshold2 = 5;
-
-        let tss_signer1 = TSSSigner::from_secret_key(secret_key, threshold1).unwrap();
-        let tss_signer2 = TSSSigner::from_secret_key(secret_key, threshold2).unwrap();
-
-        // Same secret key should produce same public key
-        assert_eq!(tss_signer1.public_key, tss_signer2.public_key);
-
-        // But different thresholds
-        assert_eq!(tss_signer1.threshold, threshold1);
-        assert_eq!(tss_signer2.threshold, threshold2);
-    }
-
-    #[test]
-    fn test_mpc_key_generation() {
-        let participants = vec![
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-        ];
-        let key_gen = MPCKeyGeneration::new(participants.clone(), 2);
-        assert_eq!(key_gen.threshold, 2);
-        assert_eq!(key_gen.participants, participants);
-        assert!(key_gen.has_sufficient_participants(2));
-        assert!(key_gen.has_sufficient_participants(3));
-        assert!(!key_gen.has_sufficient_participants(1));
-    }
-
-    #[test]
-    fn test_mpc_key_generation_single_participant() {
-        let participant = Pubkey::new_unique();
-        let key_gen = MPCKeyGeneration::new(vec![participant.clone()], 1);
-        assert_eq!(key_gen.threshold, 1);
-        assert_eq!(key_gen.participants, vec![participant]);
-        assert!(key_gen.has_sufficient_participants(1));
-        assert!(!key_gen.has_sufficient_participants(0));
-    }
-
-    #[test]
-    fn test_mpc_key_generation_master_public_key() {
-        let participants = vec![Pubkey::new_unique(), Pubkey::new_unique()];
-        let key_gen = MPCKeyGeneration::new(participants.clone(), 2);
-        let master_pubkey = key_gen.master_public_key();
-
-        assert_eq!(master_pubkey.to_bytes().len(), 32);
-        // Master public key should be deterministic for same participants
-        let key_gen2 = MPCKeyGeneration::new(participants, 2);
-        assert_eq!(master_pubkey, key_gen2.master_public_key());
-    }
-
-    #[test]
-    fn test_enhanced_mpc_signer() {
-        let enhanced_signer = EnhancedMPCSigner::new(3);
-        assert_eq!(enhanced_signer.ed25519_public_key().to_bytes().len(), 32);
-        assert_eq!(enhanced_signer.tss_public_key().to_bytes().len(), 32);
-
-        // Test Ed25519 signing
-        let message = b"test message";
-        let signature = enhanced_signer.sign_ed25519(message).unwrap();
-        assert_eq!(signature.as_ref().len(), 64);
-
-        // Test TSS signing
-        let tss_signature = enhanced_signer.sign_tss(message).unwrap();
-        assert_eq!(tss_signature.as_ref().len(), 64);
-
-        // Test key hash
-        assert_eq!(enhanced_signer.key_hash().len(), 32);
-    }
-
-    #[test]
-    fn test_enhanced_mpc_signer_from_ed25519() {
-        let ed25519_signer = create_mpc_signer();
-        let threshold = 4;
-
-        let enhanced_signer =
-            EnhancedMPCSigner::from_ed25519_signer(ed25519_signer.clone(), threshold);
-
-        assert_eq!(
-            enhanced_signer.ed25519_public_key(),
-            ed25519_signer.public_key
-        );
-        assert_eq!(enhanced_signer.tss_public_key().to_bytes().len(), 32);
-        assert_eq!(enhanced_signer.key_hash().len(), 32);
-
-        // Test signing with both methods
-        let message = b"enhanced test";
-        let ed25519_sig = enhanced_signer.sign_ed25519(message).unwrap();
-        let tss_sig = enhanced_signer.sign_tss(message).unwrap();
-
-        assert_eq!(ed25519_sig.as_ref().len(), 64);
-        assert_eq!(tss_sig.as_ref().len(), 64);
-    }
-
-    #[test]
-    fn test_enhanced_mpc_signer_key_hash_consistency() {
-        let enhanced_signer1 = EnhancedMPCSigner::new(3);
-        let enhanced_signer2 = EnhancedMPCSigner::new(3);
-
-        // Different signers should have different key hashes
-        assert_ne!(enhanced_signer1.key_hash(), enhanced_signer2.key_hash());
-
-        // But same signer should have consistent key hash
-        assert_eq!(enhanced_signer1.key_hash(), enhanced_signer1.key_hash());
-    }
-
-    #[test]
-    fn test_wasm_fallback_behavior() {
-        // Test that WASM fallback works correctly
-        let signer = create_mpc_signer();
-        assert!(
-            !signer.wasm_available,
-            "WASM should not be available in current implementation"
-        );
-
-        // But signing should still work
-        let message = b"WASM fallback test";
-        let signature = signer.sign(message).unwrap();
-        assert!(signer.verify(message, &signature));
-    }
-
-    #[test]
-    fn test_performance_signing() {
-        let signer = create_mpc_signer();
-        let message = b"performance test message";
-        let iterations = 1000;
-
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _signature = signer.sign(message).unwrap();
-        }
-        let duration = start.elapsed();
-
-        let avg_time = duration.as_micros() as f64 / iterations as f64;
-        println!("Average signing time: {:.2}μs", avg_time);
-
-        // Should be reasonably fast (adjusted for real-world performance)
-        assert!(avg_time < 500.0, "Signing should be fast");
-    }
-
-    #[test]
-    fn test_performance_verification() {
-        let signer = create_mpc_signer();
-        let message = b"performance test message";
-        let signature = signer.sign(message).unwrap();
-        let iterations = 1000;
-
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _verified = signer.verify(message, &signature);
-        }
-        let duration = start.elapsed();
-
-        let avg_time = duration.as_micros() as f64 / iterations as f64;
-        println!("Average verification time: {:.2}μs", avg_time);
-
-        // Should be reasonably fast (adjusted for real-world performance)
-        assert!(avg_time < 500.0, "Verification should be fast");
-    }
-
-    #[test]
-    fn test_error_handling() {
-        // Test invalid secret key length (this should be handled by ed25519-dalek)
-        let _invalid_secret = [0u8; 16]; // Too short
-                                         // ed25519-dalek v2.x doesn't return Result, it panics or uses different error handling
-                                         // So we'll test with a valid 32-byte key instead
-        let valid_secret = [0u8; 32];
-        let result = SigningKey::from_bytes(&valid_secret);
-        // This should succeed
-        assert_eq!(result.to_bytes(), valid_secret);
-    }
-}
+// Tests are now in api_tests.rs module

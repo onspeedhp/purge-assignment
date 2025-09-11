@@ -1,8 +1,8 @@
 use crate::error::Error;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
-    instruction::Instruction, message::Message, pubkey::Pubkey, system_instruction,
-    transaction::Transaction,
+    instruction::Instruction, message::Message, pubkey::Pubkey, transaction::Transaction,
+    system_instruction,
 };
 use std::str::FromStr;
 
@@ -114,31 +114,3 @@ pub fn validate_public_key(key_string: &str) -> Result<Pubkey, Error> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sol_lamports_conversion() {
-        assert_eq!(sol_to_lamports(1.0), 1_000_000_000);
-        assert_eq!(lamports_to_sol(1_000_000_000), 1.0);
-        assert_eq!(lamports_to_sol(500_000_000), 0.5);
-    }
-
-    #[test]
-    fn test_format_balance() {
-        assert_eq!(format_balance(1_000_000_000), "1.000000000 SOL");
-        assert_eq!(format_balance(500_000_000), "0.500000000 SOL");
-    }
-
-    #[test]
-    fn test_validate_public_key() {
-        // Valid public key
-        let valid_key = "11111111111111111111111111111111";
-        assert!(validate_public_key(valid_key).is_ok());
-
-        // Invalid public key
-        let invalid_key = "invalid_key";
-        assert!(validate_public_key(invalid_key).is_err());
-    }
-}

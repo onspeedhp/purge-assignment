@@ -20,6 +20,7 @@ use crate::{
     tss::{cli::TSSCli, types::SolanaNetwork, wallet::TSSWallet},
     utils::serialization::*,
 };
+use solana_sdk::signature::Signer;
 
 /// Health check endpoint
 async fn health_check() -> Result<HttpResponse, Error> {
@@ -125,7 +126,8 @@ async fn sign_message(Json(payload): Json<serde_json::Value>) -> Result<HttpResp
     let mpc_keypair = mpc::MPCKeypair::from_secret_key(secret_key)
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
-    let signature = mpc_keypair.sign_message(message.as_bytes());
+    let signature = mpc_keypair.try_sign_message(message.as_bytes())
+        .map_err(|e| AppError::InternalError(e.to_string()))?;
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "signature": signature.to_string(),

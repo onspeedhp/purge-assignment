@@ -2,11 +2,9 @@
 name = "solana-mpc-tss"
 version = "1.0.0"
 edition = "2021"
-description = "A comprehensive Rust library for Solana Multi-Party Computation (MPC) and Threshold Signature Schemes (TSS)"
-authors = ["Your Name <your.email@example.com>"]
+description = "A comprehensive Rust library for Solana Multi-Party Computation (MPC) and Threshold Signature Schemes (TSS) - Compatible with ZenGo-X/solana-tss"
 license = "MIT"
-repository = "https://github.com/your-username/solana-mpc-tss"
-keywords = ["solana", "mpc", "tss", "blockchain", "cryptography"]
+keywords = ["solana", "mpc", "tss", "threshold-signatures", "multi-party-computation", "blockchain", "cryptography", "ed25519", "rust"]
 categories = ["cryptography", "web-programming::http-server"]
 
 [dependencies]
