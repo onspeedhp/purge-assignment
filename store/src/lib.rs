@@ -2,6 +2,7 @@ pub mod user;
 
 use sqlx::PgPool;
 
+#[derive(Clone)]
 pub struct Store {
     pub pool: PgPool,
 }
