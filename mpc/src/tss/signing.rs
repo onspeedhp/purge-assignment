@@ -56,11 +56,17 @@ impl TSSSigningService {
                 from: mpc_signer.public_key,
                 network: crate::tss::types::SolanaNetwork::Devnet,
                 memo,
-                recent_blockhash: self
-                    .rpc_client
-                    .get_latest_blockhash()
+                recent_blockhash: {
+                    let rpc_url = self.rpc_client.url().to_string();
+                    tokio::task::spawn_blocking(move || {
+                        let rpc_client = RpcClient::new(rpc_url);
+                        rpc_client.get_latest_blockhash()
+                    })
+                    .await
+                    .map_err(|e| Error::InternalError(format!("Failed to get blockhash: {}", e)))?
                     .map_err(Error::RecentHashFailed)?
-                    .to_string(),
+                    .to_string()
+                },
             },
         )
         .await?;
@@ -71,10 +77,17 @@ impl TSSSigningService {
         let mut signed_tx = tx;
         signed_tx.signatures.push(signature);
 
-        let tx_id = self
-            .rpc_client
-            .send_and_confirm_transaction(&signed_tx)
-            .map_err(Error::SendTransactionFailed)?;
+        let tx_id = {
+            let rpc_url = self.rpc_client.url().to_string();
+            let signed_tx_clone = signed_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let rpc_client = RpcClient::new(rpc_url);
+                rpc_client.send_and_confirm_transaction(&signed_tx_clone)
+            })
+            .await
+            .map_err(|e| Error::InternalError(format!("Failed to send transaction: {}", e)))?
+            .map_err(Error::SendTransactionFailed)?
+        };
 
         Ok(tx_id.to_string())
     }
@@ -161,26 +174,53 @@ impl TSSSigningService {
         let complete_signature =
             self.aggregate_partial_signatures(partial_signatures, aggregate_wallet)?;
 
-        // Add the aggregated signature to the transaction
-        tx.signatures
-            .push(Signature::from(complete_signature.signature));
+        // Replace the placeholder signature with the aggregated signature
+        if tx.signatures.is_empty() {
+            tx.signatures
+                .push(Signature::from(complete_signature.signature));
+        } else {
+            // Replace the first (placeholder) signature
+            tx.signatures[0] = Signature::from(complete_signature.signature);
+        }
+
+        println!("tx: {:?}", tx);
 
         // Broadcast the transaction
-        let tx_id = self
-            .rpc_client
-            .send_and_confirm_transaction(&tx)
-            .map_err(Error::SendTransactionFailed)?;
+        let tx_id = {
+            let rpc_url = self.rpc_client.url().to_string();
+            let tx_clone = tx.clone();
+            println!("Broadcasting transaction to: {}", rpc_url);
+            println!("Transaction: {:?}", tx_clone);
+
+            let result = tokio::task::spawn_blocking(move || {
+                let rpc_client = RpcClient::new(rpc_url);
+                match rpc_client.send_and_confirm_transaction(&tx_clone) {
+                    Ok(signature) => {
+                        println!("Transaction sent successfully: {}", signature);
+                        Ok(signature)
+                    }
+                    Err(e) => {
+                        println!("Transaction failed: {:?}", e);
+                        Err(e)
+                    }
+                }
+            })
+            .await
+            .map_err(|e| Error::InternalError(format!("Failed to spawn blocking task: {}", e)))?;
+
+            match result {
+                Ok(signature) => {
+                    println!("Transaction confirmed: {}", signature);
+                    signature
+                }
+                Err(e) => {
+                    println!("Transaction send error: {:?}", e);
+                    return Err(Error::SendTransactionFailed(e));
+                }
+            }
+        };
 
         Ok(tx_id.to_string())
-    }
-
-    /// Create a transaction from transaction details
-    /// Equivalent to createTransactionFromDetails() in TypeScript
-    async fn create_transaction_from_details(
-        &self,
-        details: &TSSTransactionDetails,
-    ) -> Result<solana_sdk::transaction::Transaction, Error> {
-        create_transaction_from_details(&self.rpc_client, details).await
     }
 
     /// Derive public key from secret key
@@ -389,4 +429,3 @@ impl TSSSigningService {
         Ok(ed25519_valid && tss_valid)
     }
 }
-

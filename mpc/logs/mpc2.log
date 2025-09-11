@@ -1,0 +1,31 @@
+warning: virtual workspace defaulting to `resolver = "1"` despite one or more workspace members being on edition 2024 which implies `resolver = "3"`
+note: to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
+note: to use the edition 2024 resolver, specify `workspace.resolver = "3"` in the workspace root's manifest
+note: for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+warning: /Users/mac/Documents/Fellowship/purge-assignment/Cargo.toml: unused manifest key: workspace.version
+warning: use of deprecated module `solana_sdk::system_instruction`: Use `solana_system_interface` crate instead
+ --> mpc/src/solana/transaction.rs:5:5
+  |
+5 |     system_instruction,
+  |     ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: field `async_rpc_client` is never read
+  --> mpc/src/tss/wallet.rs:17:5
+   |
+15 | pub struct TSSWallet {
+   |            --------- field in this struct
+16 |     rpc_client: RpcClient,
+17 |     async_rpc_client: AsyncRpcClient,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: `solana-mpc-tss` (lib) generated 2 warnings
+warning: `solana-mpc-tss` (bin "solana-mpc-tss") generated 2 warnings (2 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running `/Users/mac/Documents/Fellowship/purge-assignment/target/debug/solana-mpc-tss`
+Starting Solana MPC TSS Server...
+Server will be available at: http://127.0.0.1:8081
+Database: sqlite:/Users/mac/Documents/Fellowship/purge-assignment/mpc/mpc2.db

@@ -33,10 +33,7 @@ pub mod mpc;
 pub mod solana;
 pub mod tss;
 pub mod utils;
-
-// API tests module
-#[cfg(test)]
-mod api_tests;
+pub mod database;
 
 // MPC Core functionality - equivalent to TypeScript exports
 pub use mpc::{

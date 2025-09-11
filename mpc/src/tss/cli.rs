@@ -10,6 +10,7 @@ use crate::{
     },
     utils::serialization::{bytes_to_hex, hex_to_bytes},
 };
+use serde::{Deserialize, Serialize};
 
 /// CLI interface matching the original solana-tss functionality
 /// Equivalent to TSSCli class in TypeScript
@@ -161,7 +162,7 @@ impl TSSCli {
     /// Equivalent to: solana-tss agg-send-step-two <step_one_data> <participant_secret> <to> <amount> <network> <all_public_nonces> [memo] [recent_block_hash]
     pub async fn aggregate_sign_step_two(
         &self,
-        step_one_data_json: &str,
+        step_one_data: &AggSignStepOneResult,
         participant_secret_hex: &str,
         to: &str,
         amount: f64,
@@ -169,8 +170,28 @@ impl TSSCli {
         memo: Option<String>,
         recent_blockhash: Option<String>,
     ) -> Result<AggSignStepTwoResult, Error> {
-        let step_one_data: AggSignStepOneData = serde_json::from_str(step_one_data_json)
-            .map_err(|e| Error::SerializationError(e.to_string()))?;
+        // Convert hex strings to bytes and Pubkey
+        let secret_nonce_bytes = hex_to_bytes(&step_one_data.secret_nonce)?;
+        let public_nonce_bytes = hex_to_bytes(&step_one_data.public_nonce)?;
+        let participant_key = step_one_data
+            .participant_key
+            .parse()
+            .map_err(|e| Error::InvalidPublicKey(format!("Invalid participant key: {}", e)))?;
+
+        if secret_nonce_bytes.len() != 32 || public_nonce_bytes.len() != 32 {
+            return Err(Error::InvalidInput("Invalid nonce length".to_string()));
+        }
+
+        let mut secret_nonce = [0u8; 32];
+        let mut public_nonce = [0u8; 32];
+        secret_nonce.copy_from_slice(&secret_nonce_bytes);
+        public_nonce.copy_from_slice(&public_nonce_bytes);
+
+        let step_one_data = AggSignStepOneData {
+            secret_nonce,
+            public_nonce,
+            participant_key,
+        };
 
         let participant_secret_bytes = hex_to_bytes(participant_secret_hex)?;
         if participant_secret_bytes.len() != 32 {
@@ -232,24 +253,96 @@ impl TSSCli {
     /// Equivalent to: solana-tss aggregate-signatures-and-broadcast <partial_signatures> <transaction_details> <aggregate_wallet>
     pub async fn aggregate_signatures_and_broadcast(
         &self,
-        partial_signatures_json: &str,
-        transaction_details_json: &str,
-        aggregate_wallet_json: &str,
+        partial_signatures: Vec<AggSignStepTwoResult>,
+        transaction_details_params: TransactionDetailsParams,
+        aggregate_wallet_params: AggregateWalletParams,
     ) -> Result<String, Error> {
-        let partial_signatures: Vec<AggSignStepTwoData> =
-            serde_json::from_str(partial_signatures_json)
-                .map_err(|e| Error::SerializationError(e.to_string()))?;
+        // Convert Vec<AggSignStepTwoResult> to Vec<AggSignStepTwoData>
+        let partial_signatures_data: Vec<AggSignStepTwoData> = partial_signatures
+            .into_iter()
+            .map(|result| {
+                let partial_signature_bytes = hex_to_bytes(&result.partial_signature)?;
+                let public_nonce_bytes = hex_to_bytes(&result.public_nonce)?;
 
-        let transaction_details: TSSTransactionDetails =
-            serde_json::from_str(transaction_details_json)
-                .map_err(|e| Error::SerializationError(e.to_string()))?;
+                if partial_signature_bytes.len() != 64 {
+                    return Err(Error::InvalidInput(
+                        "Partial signature must be 64 bytes".to_string(),
+                    ));
+                }
+                if public_nonce_bytes.len() != 32 {
+                    return Err(Error::InvalidInput(
+                        "Public nonce must be 32 bytes".to_string(),
+                    ));
+                }
 
-        let aggregate_wallet: AggregateWallet = serde_json::from_str(aggregate_wallet_json)
-            .map_err(|e| Error::SerializationError(e.to_string()))?;
+                let mut partial_signature = [0u8; 64];
+                let mut public_nonce = [0u8; 32];
+                partial_signature.copy_from_slice(&partial_signature_bytes);
+                public_nonce.copy_from_slice(&public_nonce_bytes);
+
+                let participant_key = result.participant_key.parse().map_err(|e| {
+                    Error::InvalidPublicKey(format!("Invalid participant key: {}", e))
+                })?;
+
+                Ok(AggSignStepTwoData {
+                    partial_signature,
+                    public_nonce,
+                    participant_key,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Convert TransactionDetailsParams to TSSTransactionDetails
+
+        let to_public_key = self
+            .wallet
+            .validate_public_key(&transaction_details_params.to)?;
+
+        let from_public_key = self
+            .wallet
+            .validate_public_key(&transaction_details_params.from)?;
+
+        let network = match transaction_details_params.network.as_str() {
+            "mainnet" => SolanaNetwork::MainnetBeta,
+            "testnet" => SolanaNetwork::Testnet,
+            _ => SolanaNetwork::Devnet,
+        };
+
+        let memo = if transaction_details_params.memo.is_empty() {
+            None
+        } else {
+            Some(transaction_details_params.memo)
+        };
+
+        let transaction_details = TSSTransactionDetails {
+            amount: transaction_details_params.amount,
+            to: to_public_key,
+            from: from_public_key,
+            network,
+            memo,
+            recent_blockhash: transaction_details_params.recent_blockhash,
+        };
+
+        // Convert AggregateWalletParams to AggregateWallet
+        let participant_keys = aggregate_wallet_params
+            .participant_keys
+            .into_iter()
+            .map(|key_str| self.wallet.validate_public_key(&key_str))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let aggregated_public_key = self
+            .wallet
+            .validate_public_key(&aggregate_wallet_params.aggregated_public_key)?;
+
+        let aggregate_wallet = AggregateWallet {
+            aggregated_public_key,
+            participant_keys,
+            threshold: aggregate_wallet_params.threshold,
+        };
 
         self.signing_service
             .aggregate_signatures_and_broadcast(
-                &partial_signatures,
+                &partial_signatures_data,
                 &transaction_details,
                 &aggregate_wallet,
             )
@@ -327,18 +420,36 @@ pub struct AggregateKeysResult {
     pub threshold: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggSignStepOneResult {
     pub secret_nonce: String,
     pub public_nonce: String,
     pub participant_key: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggSignStepTwoResult {
     pub partial_signature: String,
     pub public_nonce: String,
     pub participant_key: String,
+}
+
+/// Transaction details for aggregate signatures and broadcast
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionDetailsParams {
+    pub amount: f64,
+    pub to: String,
+    pub from: String,
+    pub network: String,
+    pub memo: String,
+    pub recent_blockhash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateWalletParams {
+    pub aggregated_public_key: String,
+    pub participant_keys: Vec<String>,
+    pub threshold: usize,
 }
 
 impl Default for TSSCli {

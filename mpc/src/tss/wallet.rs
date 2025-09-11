@@ -1,7 +1,10 @@
 use crate::{
     error::Error,
     mpc::create_mpc_signer,
-    solana::transaction::{format_balance, sol_to_lamports, validate_public_key},
+    solana::{
+        client::AsyncRpcClient,
+        transaction::{format_balance, sol_to_lamports, validate_public_key},
+    },
     tss::types::{AggregateWallet, SolanaNetwork, TSSKeypair},
 };
 use solana_client::rpc_client::RpcClient;
@@ -11,6 +14,7 @@ use solana_sdk::pubkey::Pubkey;
 /// Equivalent to TSSWallet class in TypeScript
 pub struct TSSWallet {
     rpc_client: RpcClient,
+    async_rpc_client: AsyncRpcClient,
     network: SolanaNetwork,
 }
 
@@ -19,8 +23,10 @@ impl TSSWallet {
     /// Equivalent to new TSSWallet(network) in TypeScript
     pub fn new(network: SolanaNetwork) -> Self {
         let rpc_client = RpcClient::new(network.rpc_url().to_string());
+        let async_rpc_client = AsyncRpcClient::new(network.rpc_url().to_string());
         Self {
             rpc_client,
+            async_rpc_client,
             network,
         }
     }
@@ -88,10 +94,14 @@ impl TSSWallet {
     /// Get recent blockhash for transaction signing
     /// Equivalent to: solana-tss recent-block-hash
     pub async fn get_recent_blockhash(&self) -> Result<String, Error> {
-        let blockhash = self
-            .rpc_client
-            .get_latest_blockhash()
-            .map_err(Error::RecentHashFailed)?;
+        let rpc_url = self.network.rpc_url().to_string();
+        let blockhash = tokio::task::spawn_blocking(move || {
+            let rpc_client = RpcClient::new(rpc_url);
+            rpc_client.get_latest_blockhash()
+        })
+        .await
+        .map_err(|e| Error::InternalError(format!("Failed to get blockhash: {}", e)))?
+        .map_err(Error::RecentHashFailed)?;
 
         Ok(blockhash.to_string())
     }
@@ -139,4 +149,3 @@ impl Default for TSSWallet {
         Self::new(SolanaNetwork::Devnet)
     }
 }
-

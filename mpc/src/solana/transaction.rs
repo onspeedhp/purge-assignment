@@ -14,9 +14,16 @@ pub async fn create_transfer_tx(
     to: Pubkey,
     lamports: u64,
 ) -> Result<Transaction, Error> {
-    let recent_blockhash = rpc_client
-        .get_latest_blockhash()
-        .map_err(Error::RecentHashFailed)?;
+    let recent_blockhash = {
+        let rpc_url = rpc_client.url().to_string();
+        tokio::task::spawn_blocking(move || {
+            let rpc_client = RpcClient::new(rpc_url);
+            rpc_client.get_latest_blockhash()
+        })
+        .await
+        .map_err(|e| Error::InternalError(format!("Failed to get blockhash: {}", e)))?
+        .map_err(Error::RecentHashFailed)?
+    };
 
     let instruction = system_instruction::transfer(&from, &to, lamports);
     let message = Message::new(&[instruction], Some(&from));
@@ -35,9 +42,16 @@ pub async fn create_transfer_tx_with_memo(
     lamports: u64,
     memo: &str,
 ) -> Result<Transaction, Error> {
-    let recent_blockhash = rpc_client
-        .get_latest_blockhash()
-        .map_err(Error::RecentHashFailed)?;
+    let recent_blockhash = {
+        let rpc_url = rpc_client.url().to_string();
+        tokio::task::spawn_blocking(move || {
+            let rpc_client = RpcClient::new(rpc_url);
+            rpc_client.get_latest_blockhash()
+        })
+        .await
+        .map_err(|e| Error::InternalError(format!("Failed to get blockhash: {}", e)))?
+        .map_err(Error::RecentHashFailed)?
+    };
 
     let transfer_instruction = system_instruction::transfer(&from, &to, lamports);
 

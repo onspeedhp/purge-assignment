@@ -24,6 +24,7 @@ pub enum Error {
     SerializationError(String),
     InvalidInput(String),
     InternalError(String),
+    DatabaseError(String),
 }
 
 impl Display for Error {
@@ -62,6 +63,7 @@ impl Display for Error {
             Self::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
             Self::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             Self::InternalError(msg) => write!(f, "Internal error: {}", msg),
+            Self::DatabaseError(msg) => write!(f, "Database error: {}", msg),
         }
     }
 }

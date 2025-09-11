@@ -1,14 +1,17 @@
 //! # Solana MPC TSS Server
 //!
 //! A comprehensive server for Solana Multi-Party Computation (MPC) and
-//! Threshold Signature Schemes (TSS) operations.
+//! Threshold Signature Schemes (TSS) operations with database integration.
 
 use actix_web::{
-    web::{post, Json},
+    web::{post, Data, Json},
     App, Error, HttpResponse, HttpServer,
 };
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 // Core modules
+pub mod database;
 pub mod error;
 pub mod mpc;
 pub mod solana;
@@ -16,169 +19,128 @@ pub mod tss;
 pub mod utils;
 
 use crate::{
+    database::Database,
     error::Error as AppError,
-    tss::{cli::TSSCli, types::SolanaNetwork, wallet::TSSWallet},
-    utils::serialization::*,
+    tss::{cli::TSSCli, types::SolanaNetwork, AggSignStepOneResult},
 };
-use solana_sdk::signature::Signer;
 
-/// Health check endpoint
-async fn health_check() -> Result<HttpResponse, Error> {
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "status": "healthy",
-        "service": "solana-mpc-tss",
-        "version": "1.0.0"
-    })))
+/// Application state containing database
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Arc<Database>,
 }
 
-/// Create MPC keypair endpoint
-async fn create_mpc_keypair() -> Result<HttpResponse, Error> {
-    let mpc_keypair = mpc::MPCKeypair::new();
+/// Request/Response types for API endpoints
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "public_key": mpc_keypair.public_key.to_string(),
-        "secret_key": bytes_to_hex(&mpc_keypair.secret_key)
-    })))
+#[derive(Debug, Deserialize)]
+pub struct GenerateRequest {
+    pub user_id: String,
+    pub network: Option<String>,
 }
 
-/// Create TSS wallet endpoint
-async fn create_tss_wallet(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let network_str = payload
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("devnet");
-
-    let network = match network_str {
-        "mainnet" => SolanaNetwork::MainnetBeta,
-        "testnet" => SolanaNetwork::Testnet,
-        _ => SolanaNetwork::Devnet,
-    };
-
-    let wallet = TSSWallet::new(network);
-    let keypair = wallet
-        .generate_keypair()
-        .map_err(|e| AppError::InternalError(e.to_string()))?;
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "public_key": keypair.public_key.to_string(),
-        "secret_key": bytes_to_hex(&keypair.secret_key),
-        "network": network_str
-    })))
+#[derive(Debug, Serialize)]
+pub struct GenerateResponse {
+    pub user_id: String,
+    pub public_key: String,
+    pub secret_key: String,
+    pub network: String,
 }
 
-/// Aggregate keys endpoint
-async fn aggregate_keys(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let participant_keys_str = payload
-        .get("participant_keys")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| AppError::InvalidInput("Missing participant_keys".to_string()))?;
-
-    let threshold = payload
-        .get("threshold")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(participant_keys_str.len() as u64) as usize;
-
-    let mut participant_keys = Vec::new();
-    for key_str in participant_keys_str {
-        let key_str = key_str
-            .as_str()
-            .ok_or_else(|| AppError::InvalidPublicKey("Invalid key format".to_string()))?;
-        let pubkey = key_str
-            .parse()
-            .map_err(|e| AppError::InvalidPublicKey(format!("Invalid public key: {}", e)))?;
-        participant_keys.push(pubkey);
-    }
-
-    let wallet = TSSWallet::new(SolanaNetwork::Devnet);
-    let aggregate_wallet = wallet.aggregate_keys(participant_keys, Some(threshold));
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "aggregated_public_key": aggregate_wallet.aggregated_public_key.to_string(),
-        "participant_keys": aggregate_wallet.participant_keys.iter()
-            .map(|k| k.to_string())
-            .collect::<Vec<_>>(),
-        "threshold": aggregate_wallet.threshold
-    })))
+#[derive(Debug, Deserialize)]
+pub struct SendSingleRequest {
+    pub user_id: String,
+    pub to: String,
+    pub amount: f64,
+    pub memo: Option<String>,
+    pub network: Option<String>,
 }
 
-/// Sign message endpoint
-async fn sign_message(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let secret_key_hex = payload
-        .get("secret_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing secret_key".to_string()))?;
-
-    let message = payload
-        .get("message")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing message".to_string()))?;
-
-    let secret_key_bytes = hex_to_bytes(secret_key_hex)
-        .map_err(|e| AppError::InvalidInput(format!("Invalid secret key: {}", e)))?;
-
-    if secret_key_bytes.len() != 32 {
-        return Err(AppError::InvalidInput("Secret key must be 32 bytes".to_string()).into());
-    }
-
-    let mut secret_key = [0u8; 32];
-    secret_key.copy_from_slice(&secret_key_bytes);
-
-    let mpc_keypair = mpc::MPCKeypair::from_secret_key(secret_key)
-        .map_err(|e| AppError::InternalError(e.to_string()))?;
-
-    let signature = mpc_keypair.try_sign_message(message.as_bytes())
-        .map_err(|e| AppError::InternalError(e.to_string()))?;
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "signature": signature.to_string(),
-        "message": message
-    })))
+#[derive(Debug, Serialize)]
+pub struct SendSingleResponse {
+    pub transaction_id: String,
 }
 
-/// Verify signature endpoint
-async fn verify_signature(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let public_key_str = payload
-        .get("public_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing public_key".to_string()))?;
-
-    let signature_str = payload
-        .get("signature")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing signature".to_string()))?;
-
-    let message = payload
-        .get("message")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing message".to_string()))?;
-
-    let public_key = public_key_str
-        .parse()
-        .map_err(|e| AppError::InvalidInput(format!("Invalid public key: {}", e)))?;
-
-    let signature = signature_str
-        .parse()
-        .map_err(|e| AppError::InvalidInput(format!("Invalid signature: {}", e)))?;
-
-    let mpc_keypair = mpc::MPCKeypair::from_public_key(public_key);
-    let is_valid = mpc_keypair.verify(message.as_bytes(), &signature);
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "valid": is_valid,
-        "public_key": public_key_str,
-        "signature": signature_str,
-        "message": message
-    })))
+#[derive(Debug, Deserialize)]
+pub struct AggregateKeysRequest {
+    pub participant_keys: Vec<String>,
+    pub threshold: Option<usize>,
+    pub network: Option<String>,
 }
 
-/// CLI interface endpoint - equivalent to TSSCli functionality
-async fn cli_generate(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let network_str = payload
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("devnet");
+#[derive(Debug, Serialize)]
+pub struct AggregateKeysResponse {
+    pub aggregated_public_key: String,
+    pub participant_keys: Vec<String>,
+    pub threshold: usize,
+}
 
-    let network = match network_str {
+#[derive(Debug, Deserialize)]
+pub struct AggSendStep1Request {
+    pub user_id: String,
+    pub to: String,
+    pub amount: f64,
+    pub memo: Option<String>,
+    pub network: Option<String>,
+    pub recent_blockhash: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggSendStep1Response {
+    pub secret_nonce: String,
+    pub public_nonce: String,
+    pub participant_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AggSendStep2Request {
+    pub step1_data: AggSignStepOneResult,
+    pub user_id: String,
+    pub to: String,
+    pub amount: f64,
+    pub all_public_nonces: Vec<String>,
+    pub memo: Option<String>,
+    pub network: Option<String>,
+    pub recent_blockhash: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggSendStep2Response {
+    pub partial_signature: String,
+    pub public_nonce: String,
+    pub participant_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AggregateSignaturesBroadcastRequest {
+    pub partial_signatures: Vec<crate::tss::cli::AggSignStepTwoResult>, // Vec of step2 responses
+    pub transaction_details: crate::tss::cli::TransactionDetailsParams, // Transaction details struct
+    pub aggregated_wallet: crate::tss::cli::AggregateWalletParams, // JSON string of aggregated wallet
+    pub network: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AggregateSignaturesBroadcastResponse {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetBlockHashRequest {
+    pub network: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetBlockHashResponse {
+    pub block_hash: String,
+    pub network: String,
+}
+
+/// Generate keypair endpoint - equivalent to TSSCli.generate()
+async fn generate(
+    state: Data<AppState>,
+    Json(payload): Json<GenerateRequest>,
+) -> Result<HttpResponse, Error> {
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
         "mainnet" => SolanaNetwork::MainnetBeta,
         "testnet" => SolanaNetwork::Testnet,
         _ => SolanaNetwork::Devnet,
@@ -190,60 +152,36 @@ async fn cli_generate(Json(payload): Json<serde_json::Value>) -> Result<HttpResp
         .await
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "public_key": result.public_key,
-        "secret_key": result.secret_key
-    })))
-}
-
-/// CLI balance endpoint
-async fn cli_balance(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let address = payload
-        .get("address")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing address".to_string()))?;
-
-    let network_str = payload
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("devnet");
-
-    let network = match network_str {
-        "mainnet" => SolanaNetwork::MainnetBeta,
-        "testnet" => SolanaNetwork::Testnet,
-        _ => SolanaNetwork::Devnet,
-    };
-
-    let cli = TSSCli::new(network);
-    let balance = cli
-        .balance(address)
+    // Store key share in database
+    state
+        .db
+        .store_key_share(&payload.user_id, &result.public_key, &result.secret_key)
         .await
-        .map_err(|e| AppError::InternalError(e.to_string()))?;
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "balance": balance,
-        "formatted_balance": TSSCli::format_balance(balance)
-    })))
+    Ok(HttpResponse::Ok().json(GenerateResponse {
+        user_id: payload.user_id,
+        public_key: result.public_key,
+        secret_key: result.secret_key,
+        network: network_str,
+    }))
 }
 
-/// CLI airdrop endpoint
-async fn cli_airdrop(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let address = payload
-        .get("address")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing address".to_string()))?;
+/// Send single transaction endpoint - equivalent to TSSCli.send_single()
+async fn send_single(
+    state: Data<AppState>,
+    Json(payload): Json<SendSingleRequest>,
+) -> Result<HttpResponse, Error> {
+    // Get key share from database
+    let key_share = state
+        .db
+        .get_key_share_by_user_id(&payload.user_id)
+        .await
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| AppError::InvalidInput("User not found".to_string()))?;
 
-    let amount = payload
-        .get("amount")
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| AppError::InvalidInput("Missing amount".to_string()))?;
-
-    let network_str = payload
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("devnet");
-
-    let network = match network_str {
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
         "mainnet" => SolanaNetwork::MainnetBeta,
         "testnet" => SolanaNetwork::Testnet,
         _ => SolanaNetwork::Devnet,
@@ -251,82 +189,27 @@ async fn cli_airdrop(Json(payload): Json<serde_json::Value>) -> Result<HttpRespo
 
     let cli = TSSCli::new(network);
     let tx_id = cli
-        .airdrop(address, amount)
+        .send_single(
+            &key_share.private_key,
+            &payload.to,
+            payload.amount,
+            payload.memo,
+        )
         .await
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "transaction_id": tx_id
-    })))
+    Ok(HttpResponse::Ok().json(SendSingleResponse {
+        transaction_id: tx_id,
+    }))
 }
 
-/// CLI send single endpoint
-async fn cli_send_single(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let from_secret = payload
-        .get("from_secret")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing from_secret".to_string()))?;
+/// Aggregate keys endpoint - equivalent to TSSCli.aggregate_keys()
+async fn aggregate_keys(Json(payload): Json<AggregateKeysRequest>) -> Result<HttpResponse, Error> {
+    // Use participant keys directly from request
+    let participant_keys = payload.participant_keys;
 
-    let to = payload
-        .get("to")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::InvalidInput("Missing to".to_string()))?;
-
-    let amount = payload
-        .get("amount")
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| AppError::InvalidInput("Missing amount".to_string()))?;
-
-    let memo = payload
-        .get("memo")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let network_str = payload
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("devnet");
-
-    let network = match network_str {
-        "mainnet" => SolanaNetwork::MainnetBeta,
-        "testnet" => SolanaNetwork::Testnet,
-        _ => SolanaNetwork::Devnet,
-    };
-
-    let cli = TSSCli::new(network);
-    let tx_id = cli
-        .send_single(from_secret, to, amount, memo)
-        .await
-        .map_err(|e| AppError::InternalError(e.to_string()))?;
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "transaction_id": tx_id
-    })))
-}
-
-/// CLI aggregate keys endpoint
-async fn cli_aggregate_keys(Json(payload): Json<serde_json::Value>) -> Result<HttpResponse, Error> {
-    let keys = payload
-        .get("keys")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| AppError::InvalidInput("Missing keys".to_string()))?;
-
-    let threshold = payload
-        .get("threshold")
-        .and_then(|v| v.as_u64())
-        .map(|t| t as usize);
-
-    let key_strings: Vec<String> = keys
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-
-    let network_str = payload
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("devnet");
-
-    let network = match network_str {
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
         "mainnet" => SolanaNetwork::MainnetBeta,
         "testnet" => SolanaNetwork::Testnet,
         _ => SolanaNetwork::Devnet,
@@ -334,50 +217,201 @@ async fn cli_aggregate_keys(Json(payload): Json<serde_json::Value>) -> Result<Ht
 
     let cli = TSSCli::new(network);
     let result = cli
-        .aggregate_keys(&key_strings, threshold)
+        .aggregate_keys(&participant_keys, payload.threshold)
         .map_err(|e| AppError::InternalError(e.to_string()))?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "aggregated_public_key": result.aggregated_public_key,
-        "participant_keys": result.participant_keys,
-        "threshold": result.threshold
-    })))
+    Ok(HttpResponse::Ok().json(AggregateKeysResponse {
+        aggregated_public_key: result.aggregated_public_key,
+        participant_keys: result.participant_keys,
+        threshold: result.threshold,
+    }))
 }
 
-/// CLI help endpoint
-async fn cli_help() -> Result<HttpResponse, Error> {
-    let help_text = TSSCli::print_help();
+/// Aggregate send step 1 endpoint - equivalent to TSSCli.aggregate_sign_step_one()
+async fn agg_send_step1(
+    state: Data<AppState>,
+    Json(payload): Json<AggSendStep1Request>,
+) -> Result<HttpResponse, Error> {
+    // Get key share from database
+    let key_share = state
+        .db
+        .get_key_share_by_user_id(&payload.user_id)
+        .await
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| AppError::InvalidInput("User not found".to_string()))?;
+
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
+        "mainnet" => SolanaNetwork::MainnetBeta,
+        "testnet" => SolanaNetwork::Testnet,
+        _ => SolanaNetwork::Devnet,
+    };
+
+    let cli = TSSCli::new(network);
+
+    let result = cli
+        .aggregate_sign_step_one(
+            &key_share.private_key,
+            &payload.to,
+            payload.amount,
+            payload.memo,
+            Some(payload.recent_blockhash),
+        )
+        .await
+        .map_err(|e| AppError::InternalError(e.to_string()))?;
+
+    Ok(HttpResponse::Ok().json(AggSendStep1Response {
+        secret_nonce: result.secret_nonce,
+        public_nonce: result.public_nonce,
+        participant_key: result.participant_key,
+    }))
+}
+
+/// Aggregate send step 2 endpoint - equivalent to TSSCli.aggregate_sign_step_two()
+async fn agg_send_step2(
+    state: Data<AppState>,
+    Json(payload): Json<AggSendStep2Request>,
+) -> Result<HttpResponse, Error> {
+    // Get key share from database
+    let key_share = state
+        .db
+        .get_key_share_by_user_id(&payload.user_id)
+        .await
+        .map_err(|e| AppError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| AppError::InvalidInput("User not found".to_string()))?;
+
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
+        "mainnet" => SolanaNetwork::MainnetBeta,
+        "testnet" => SolanaNetwork::Testnet,
+        _ => SolanaNetwork::Devnet,
+    };
+
+    let cli = TSSCli::new(network);
+
+    let result = cli
+        .aggregate_sign_step_two(
+            &AggSignStepOneResult {
+                secret_nonce: payload.step1_data.secret_nonce,
+                public_nonce: payload.step1_data.public_nonce,
+                participant_key: payload.step1_data.participant_key,
+            },
+            &key_share.private_key,
+            &payload.to,
+            payload.amount,
+            &payload.all_public_nonces,
+            payload.memo,
+            Some(payload.recent_blockhash),
+        )
+        .await
+        .map_err(|e| AppError::InternalError(e.to_string()))?;
+
+    Ok(HttpResponse::Ok().json(AggSendStep2Response {
+        partial_signature: result.partial_signature,
+        public_nonce: result.public_nonce,
+        participant_key: result.participant_key,
+    }))
+}
+
+/// Aggregate signatures and broadcast endpoint - equivalent to TSSCli.aggregate_signatures_and_broadcast()
+async fn aggregate_signatures_broadcast(
+    Json(payload): Json<AggregateSignaturesBroadcastRequest>,
+) -> Result<HttpResponse, Error> {
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
+        "mainnet" => SolanaNetwork::MainnetBeta,
+        "testnet" => SolanaNetwork::Testnet,
+        _ => SolanaNetwork::Devnet,
+    };
+
+    let cli = TSSCli::new(network);
+    let tx_id = cli
+        .aggregate_signatures_and_broadcast(
+            payload.partial_signatures,
+            payload.transaction_details,
+            payload.aggregated_wallet,
+        )
+        .await
+        .map_err(|e| AppError::InternalError(e.to_string()))?;
+
+    Ok(
+        HttpResponse::Ok().json(AggregateSignaturesBroadcastResponse {
+            transaction_id: tx_id,
+        }),
+    )
+}
+
+/// Get recent block hash endpoint
+async fn get_blockhash(Json(payload): Json<GetBlockHashRequest>) -> Result<HttpResponse, Error> {
+    let network_str = payload.network.unwrap_or_else(|| "devnet".to_string());
+    let network = match network_str.as_str() {
+        "mainnet" => SolanaNetwork::MainnetBeta,
+        "testnet" => SolanaNetwork::Testnet,
+        _ => SolanaNetwork::Devnet,
+    };
+
+    let cli = TSSCli::new(network);
+    let block_hash = cli
+        .recent_block_hash()
+        .await
+        .map_err(|e| AppError::InternalError(e.to_string()))?;
+
+    Ok(HttpResponse::Ok().json(GetBlockHashResponse {
+        block_hash,
+        network: network_str,
+    }))
+}
+
+/// Health check endpoint
+async fn health_check() -> Result<HttpResponse, Error> {
     Ok(HttpResponse::Ok().json(serde_json::json!({
-        "help": help_text
+        "status": "healthy",
+        "service": "solana-mpc-tss",
+        "version": "1.0.0"
     })))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("Starting Solana MPC TSS Server...");
-    println!("Server will be available at: http://localhost:8080");
-    println!("CLI help available at: http://localhost:8080/cli/help");
 
-    HttpServer::new(|| {
+    // Initialize database
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mpc.db".to_string());
+
+    let db = Database::new(&database_url)
+        .await
+        .expect("Failed to initialize database");
+
+    let app_state = AppState { db: Arc::new(db) };
+
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse::<u16>()
+        .unwrap_or(8080);
+
+    println!("Server will be available at: http://127.0.0.1:{}", port);
+    println!("Database: {}", database_url);
+
+    HttpServer::new(move || {
         App::new()
+            .app_data(Data::new(app_state.clone()))
             // Health check
             .route("/health", actix_web::web::get().to(health_check))
-            // MPC endpoints
-            .route("/mpc/keypair", post().to(create_mpc_keypair))
-            .route("/mpc/sign", post().to(sign_message))
-            .route("/mpc/verify", post().to(verify_signature))
-            // TSS endpoints
-            .route("/tss/wallet", post().to(create_tss_wallet))
-            .route("/tss/aggregate", post().to(aggregate_keys))
-            // CLI endpoints (equivalent to TSSCli methods)
-            .route("/cli/generate", post().to(cli_generate))
-            .route("/cli/balance", post().to(cli_balance))
-            .route("/cli/airdrop", post().to(cli_airdrop))
-            .route("/cli/send-single", post().to(cli_send_single))
-            .route("/cli/aggregate-keys", post().to(cli_aggregate_keys))
-            .route("/cli/help", actix_web::web::get().to(cli_help))
+            // Get block hash endpoint
+            .route("/get-blockhash", post().to(get_blockhash))
+            // 6 main TSS endpoints as requested
+            .route("/generate", post().to(generate))
+            .route("/send-single", post().to(send_single))
+            .route("/aggregate-keys", post().to(aggregate_keys))
+            .route("/agg-send-step1", post().to(agg_send_step1))
+            .route("/agg-send-step2", post().to(agg_send_step2))
+            .route(
+                "/aggregate-signatures-broadcast",
+                post().to(aggregate_signatures_broadcast),
+            )
     })
-    .bind("127.0.0.1:8080")?
+    .bind(format!("127.0.0.1:{}", port))?
     .run()
     .await
 }

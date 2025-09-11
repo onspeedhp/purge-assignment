@@ -26,3 +26,10 @@ anyhow = "1.0"
 blake2 = "0.10"
 # Async runtime
 futures = "0.3"
+# Database dependencies
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3.0"
