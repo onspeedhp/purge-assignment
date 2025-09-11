@@ -1,2 +1,9 @@
 target
 .env.*
+
+
+specs/*
+
+mpc/logs/*
+
+**/.env
