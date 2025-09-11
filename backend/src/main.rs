@@ -1,11 +1,11 @@
 use actix_web::{web, App, HttpServer};
-use dotenv::dotenv;
 use std::env;
 use store::Store;
 use tracing::info;
 use tracing_subscriber;
 
 mod routes;
+mod auth;
 use routes::*;
 
 #[actix_web::main]
@@ -15,12 +15,15 @@ async fn main() -> std::io::Result<()> {
         .with_env_filter("backend=debug,sqlx=debug,actix_web=info")
         .init();
 
-    dotenv().ok();
+    if let Err(e) = dotenv::from_path("backend/.env") {
+        eprintln!("Warning: Could not load backend/.env file: {}", e);
+        eprintln!("Make sure backend/.env exists with DATABASE_URL and JWT_SECRET");
+    }
     
     let database_url = env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
     
-    info!("Connecting to database...");
+    info!("Connecting to database... {}", database_url);
     let pool = sqlx::PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
