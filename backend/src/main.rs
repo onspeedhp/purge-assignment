@@ -16,7 +16,7 @@ async fn main() -> std::io::Result<()> {
         .with_env_filter("backend=debug,sqlx=debug,actix_web=info")
         .init();
 
-    if let Err(e) = dotenv::from_path("backend/.env") {
+    if let Err(e) = dotenv::from_path(".env") {
         eprintln!("Warning: Could not load backend/.env file: {}", e);
         eprintln!("Make sure backend/.env exists with DATABASE_URL, JWT_SECRET, and REDIS_URL");
     }
