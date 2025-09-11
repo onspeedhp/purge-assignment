@@ -94,7 +94,6 @@ pub struct TokenBalanceResponse {
 
 #[actix_web::post("/api/v1/quote")]
 pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Result<HttpResponse> {    
-    // Get authenticated user ID
     let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Quote request from authenticated user: {}", id);
@@ -106,11 +105,16 @@ pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Resul
     };
 
     // TODO: handle check balance user
+    /**
+     * 1. Call API from MPC to get user wallet
+     * 
+     * 2. Check current balance of user wallet with input token. 
+     * 
+     * 3. If current balance < inputAmount - return error
+     */
     
-    // Set slippage to 0.5% (50 basis points) as per spec
     let slippage_bps = 50;
     
-    // Build Jupiter API URL
     let jupiter_url = format!(
         "https://lite-api.jup.ag/swap/v1/quote?inputMint={}&outputMint={}&amount={}&slippageBps={}&restrictIntermediateTokens=true",
         req.input_mint,
@@ -119,15 +123,12 @@ pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Resul
         slippage_bps
     );
         
-    // Call Jupiter API
     let client = reqwest::Client::new();
     let jupiter_response = match client.get(&jupiter_url).send().await {
         Ok(response) => {
             if response.status().is_success() {
                 match response.json::<JupiterQuoteResponse>().await {
                     Ok(quote_data) => {
-                        info!("Jupiter quote received successfully");
-                        debug!("Jupiter response: {:?}", quote_data);
                         quote_data
                     }
                     Err(e) => {
@@ -152,12 +153,15 @@ pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Resul
         }
     };
     
-    // Generate unique ID for the quote
     let quote_id = Uuid::new_v4().to_string();
     
-    info!("Quote completed successfully with ID: {}", quote_id);
+    /**
+     * Initalize cache (redis)
+     * 
+     * store tmp qoute request with key is quote_id
+     * 
+     */
     
-    // Return the worst price (slippage maxed) as per spec
     let response = QuoteResponse {
         out_amount: jupiter_response.other_amount_threshold, // This is the worst price with slippage
         id: quote_id,
