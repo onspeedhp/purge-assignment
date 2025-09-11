@@ -25,7 +25,7 @@ async fn main() -> std::io::Result<()> {
         .expect("DATABASE_URL must be set");
     
     let redis_url = env::var("REDIS_URL")
-        .unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
+        .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
     
     info!("Connecting to database... {}", database_url);
     let pool = sqlx::PgPool::connect(&database_url)

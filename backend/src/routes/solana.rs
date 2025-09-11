@@ -78,7 +78,7 @@ pub struct QuoteResponse {
 
 #[derive(Deserialize)]
 pub struct SwapRequest {
-    pub quote_id: String,
+    pub id: String,  // Thay đổi từ quote_id thành id
 }
 
 #[derive(Serialize)]
@@ -243,10 +243,10 @@ pub async fn swap(
     };
     
     // Check if quote exists in Redis
-    let _quote_data = match get_quote_from_redis(&redis_client, &req.quote_id).await {
+    let _quote_data = match get_quote_from_redis(&redis_client, &req.id).await {
         Ok(Some(quote_data)) => quote_data,
         Ok(None) => {
-            error!("Quote {} not found in Redis", req.quote_id);
+            error!("Quote {} not found in Redis", req.id);
             return Ok(HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "Quote not found or expired. Please request a new quote."
             })));
@@ -259,13 +259,13 @@ pub async fn swap(
         }
     };
     
-    info!("Found quote {} in Redis, proceeding with swap for user {}", req.quote_id, _user_id);
+    info!("Found quote {} in Redis, proceeding with swap for user {}", req.id, _user_id);
     
     // TODO: Implement actual swap logic using the cached quote data
     // For now, just return success
     let response = SwapResponse {
         success: true,
-        message: format!("Swap initiated for quote {}", req.quote_id),
+        message: format!("Swap initiated for quote {}", req.id),
     };
     
     Ok(HttpResponse::Ok().json(response))
