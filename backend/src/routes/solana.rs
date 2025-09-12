@@ -2,7 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, error, debug};
 use uuid::Uuid;
-use redis::{Client as RedisClient, AsyncCommands};
+use store::redis::{RedisStore, JupiterQuoteResponse};
 use crate::auth::get_user_id_from_request;
 
 #[derive(Deserialize, Debug)]
@@ -13,34 +13,6 @@ pub struct QuoteRequest {
     pub output_mint: String,
     #[serde(rename = "inAmount")]
     pub in_amount: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct JupiterQuoteResponse {
-    #[serde(rename = "inputMint")]
-    pub input_mint: String,
-    #[serde(rename = "inAmount")]
-    pub in_amount: String,
-    #[serde(rename = "outputMint")]
-    pub output_mint: String,
-    #[serde(rename = "outAmount")]
-    pub out_amount: String,
-    #[serde(rename = "otherAmountThreshold")]
-    pub other_amount_threshold: String,
-    #[serde(rename = "swapMode")]
-    pub swap_mode: String,
-    #[serde(rename = "slippageBps")]
-    pub slippage_bps: u64,
-    #[serde(rename = "platformFee")]
-    pub platform_fee: Option<String>,
-    #[serde(rename = "priceImpactPct")]
-    pub price_impact_pct: String,
-    #[serde(rename = "routePlan")]
-    pub route_plan: Vec<RoutePlan>,
-    #[serde(rename = "contextSlot")]
-    pub context_slot: u64,
-    #[serde(rename = "timeTaken")]
-    pub time_taken: f64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -78,7 +50,7 @@ pub struct QuoteResponse {
 
 #[derive(Deserialize)]
 pub struct SwapRequest {
-    pub id: String,  // Thay đổi từ quote_id thành id
+    pub id: String,
 }
 
 #[derive(Serialize)]
@@ -97,57 +69,11 @@ pub struct TokenBalanceResponse {
     // Add fields when implementing
 }
 
-// Helper function to store quote in Redis
-async fn store_quote_in_redis(
-    redis_client: &RedisClient,
-    quote_id: &str,
-    quote_data: &JupiterQuoteResponse,
-    ttl_seconds: u64,
-) -> redis::RedisResult<()> {
-    let mut conn = redis_client.get_multiplexed_async_connection().await?;
-    
-    let quote_json = serde_json::to_string(quote_data)
-        .map_err(|e| redis::RedisError::from((redis::ErrorKind::TypeError, "Serialization failed", e.to_string())))?;
-    
-    let key = format!("quote:{}", quote_id);
-    
-    // Using the new API with set and expire
-    let _: () = conn.set(&key, &quote_json).await?;
-    let _: () = conn.expire(&key, ttl_seconds as i64).await?;
-    
-    info!("Stored quote {} in Redis with TTL {} seconds", quote_id, ttl_seconds);
-    Ok(())
-}
-
-// Helper function to get quote from Redis
-async fn get_quote_from_redis(
-    redis_client: &RedisClient,
-    quote_id: &str,
-) -> redis::RedisResult<Option<JupiterQuoteResponse>> {
-    let mut conn = redis_client.get_multiplexed_async_connection().await?;
-    let key = format!("quote:{}", quote_id);
-    
-    let quote_json: Option<String> = conn.get(&key).await?;
-    
-    match quote_json {
-        Some(json) => {
-            let quote_data: JupiterQuoteResponse = serde_json::from_str(&json)
-                .map_err(|e| redis::RedisError::from((redis::ErrorKind::TypeError, "Deserialization failed", e.to_string())))?;
-            info!("Retrieved quote {} from Redis", quote_id);
-            Ok(Some(quote_data))
-        }
-        None => {
-            info!("Quote {} not found in Redis", quote_id);
-            Ok(None)
-        }
-    }
-}
-
 #[actix_web::post("/api/v1/quote")]
 pub async fn quote(
     req: web::Json<QuoteRequest>, 
     http_req: HttpRequest,
-    redis_client: web::Data<RedisClient>,
+    redis_store: web::Data<RedisStore>,
 ) -> Result<HttpResponse> {    
     let _user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
@@ -211,7 +137,7 @@ pub async fn quote(
     let quote_id = Uuid::new_v4().to_string();
     
     // Store quote in Redis with 5 minutes TTL
-    if let Err(e) = store_quote_in_redis(&redis_client, &quote_id, &jupiter_response, 300).await {
+    if let Err(e) = redis_store.store_quote(&quote_id, &jupiter_response, 300).await {
         error!("Failed to store quote in Redis: {}", e);
         return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "Failed to cache quote"
@@ -229,7 +155,7 @@ pub async fn quote(
 pub async fn swap(
     req: web::Json<SwapRequest>, 
     http_req: HttpRequest,
-    redis_client: web::Data<RedisClient>,
+    redis_store: web::Data<RedisStore>,
 ) -> Result<HttpResponse> {
     // Get authenticated user ID
     let _user_id = match get_user_id_from_request(&http_req) {
@@ -243,7 +169,7 @@ pub async fn swap(
     };
     
     // Check if quote exists in Redis
-    let _quote_data = match get_quote_from_redis(&redis_client, &req.id).await {
+    let _quote_data = match redis_store.get_quote(&req.id).await {
         Ok(Some(quote_data)) => quote_data,
         Ok(None) => {
             error!("Quote {} not found in Redis", req.id);

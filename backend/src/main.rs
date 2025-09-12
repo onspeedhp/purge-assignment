@@ -1,6 +1,6 @@
 use actix_web::{web, App, HttpServer};
 use std::env;
-use store::Store;
+use store::{Store, redis::RedisStore};
 use tracing::info;
 use tracing_subscriber;
 use redis::Client as RedisClient;
@@ -40,12 +40,13 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to create Redis client");
     
     info!("Redis client created successfully!");
+    let redis_store = RedisStore::new(redis_client);
 
     info!("Starting server on http://127.0.0.1:8080");
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(store.clone()))
-            .app_data(web::Data::new(redis_client.clone()))
+            .app_data(web::Data::new(redis_store.clone()))
             .wrap(tracing_actix_web::TracingLogger::default())
             .service(sign_up)  
             .service(sign_in)

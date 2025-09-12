@@ -1,4 +1,5 @@
 pub mod user;
+pub mod redis;
 
 use sqlx::PgPool;
 
