@@ -4,8 +4,9 @@ use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use std::env;
 use store::{Store, user::CreateUserRequest};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use crate::auth::get_user_id_from_request;
+use frost_mpc::solana::SolanaMPCClient;
 
 #[derive(Deserialize, Debug)]
 pub struct SignUpRequest {
@@ -22,6 +23,8 @@ pub struct SignInRequest {
 #[derive(Serialize)]
 pub struct UserResponse {
     pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mpc_wallet_pubkey: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,6 +47,7 @@ struct Claims {
 pub async fn sign_up(
     req: web::Json<SignUpRequest>,
     store: web::Data<Store>,
+    _mpc_client: web::Data<SolanaMPCClient>,
 ) -> Result<HttpResponse> {
     let create_user_req = CreateUserRequest {
         email: req.username.clone(), // Using username as email for now
@@ -52,28 +56,56 @@ pub async fn sign_up(
 
     match store.create_user(create_user_req).await {
         Ok(user) => {
-            let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key".to_string());
-            let now = Utc::now();
-            let exp = (now + Duration::hours(24)).timestamp() as usize;
-
             let user_id = user.id.clone();
+            
+            // Create MPC wallet for the user
+            info!("Creating MPC wallet for user: {}", user_id);
+            let mut mpc_client_mut = SolanaMPCClient::new();
+            
+            match mpc_client_mut.generate_solana_keypair(&user_id, 2).await {
+                Ok(keypair) => {
+                    let mpc_wallet_pubkey = keypair.pubkey().to_string();
+                    info!("MPC wallet created for user {}: {}", user_id, mpc_wallet_pubkey);
+                    
+                    // Update user with MPC wallet pubkey
+                    if let Err(e) = store.update_user_mpc_wallet(&user_id, &mpc_wallet_pubkey).await {
+                        error!("Failed to update user MPC wallet: {}", e);
+                        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                            "error": "Failed to save MPC wallet"
+                        })));
+                    }
+                    
+                    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key".to_string());
+                    let now = Utc::now();
+                    let exp = (now + Duration::hours(24)).timestamp() as usize;
 
-            let claims = Claims { sub: user.id, exp };
-            let _token = encode(
-                &Header::default(),
-                &claims,
-                &EncodingKey::from_secret(secret.as_ref()),
-            )
-            .map_err(|e| {
-                error!("Failed to generate JWT token: {}", e);
-                actix_web::error::ErrorInternalServerError(e)
-            })?;
+                    let claims = Claims { sub: user.id, exp };
+                    let _token = encode(
+                        &Header::default(),
+                        &claims,
+                        &EncodingKey::from_secret(secret.as_ref()),
+                    )
+                    .map_err(|e| {
+                        error!("Failed to generate JWT token: {}", e);
+                        actix_web::error::ErrorInternalServerError(e)
+                    })?;
 
-            let response = SignupResponse {
-                message: "signed up successfully".to_string(),
-            };
+                    let response = SignupResponse {
+                        message: "signed up successfully".to_string(),
+                    };
 
-            Ok(HttpResponse::Ok().json(response))
+                    Ok(HttpResponse::Ok().json(response))
+                }
+                Err(e) => {
+                    error!("Failed to create MPC wallet for user {}: {}", user_id, e);
+                    // For now, we'll still create the user but without MPC wallet
+                    // In production, you might want to rollback user creation
+                    let response = SignupResponse {
+                        message: "signed up successfully".to_string(),
+                    };
+                    Ok(HttpResponse::Ok().json(response))
+                }
+            }
         }
         Err(store::user::UserError::UserExists) => {
             warn!("Signup failed: User already exists - {}", req.username);
@@ -167,6 +199,7 @@ pub async fn get_user(req: HttpRequest, store: web::Data<Store>) -> Result<HttpR
         Ok(Some(user)) => {
             let response = UserResponse {
                 email: user.email,
+                mpc_wallet_pubkey: user.mpc_wallet_pubkey,
             };
             Ok(HttpResponse::Ok().json(response))
         }

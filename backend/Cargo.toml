@@ -20,3 +20,10 @@ tokio = { version = "1.47.1", features = ["full"] }
 uuid = { version = "1.0", features = ["v4"] }
 futures-util = "0.3"
 redis = { version = "0.32.5", features = ["tokio-comp"] }
+bcrypt = "0.15"
+# MPC and Solana dependencies
+frost-mpc = { path = "../mpc" }
+solana-client = "2.1.8"
+solana-sdk = "2.1.8"
+hex = "0.4"
+bincode = "1.3"

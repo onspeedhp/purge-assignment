@@ -1,0 +1,312 @@
+{
+    "info": {
+      "name": "Purge Assignment Backend API",
+      "description": "Postman collection for Solana MPC Wallet Backend API",
+      "_postman_id": "a1b2c3d4-e5f6-7890-abcd-1234567890ab",
+      "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+      {
+        "key": "base_url",
+        "value": "http://127.0.0.1:8080",
+        "type": "string"
+      },
+      {
+        "key": "auth_token",
+        "value": "",
+        "type": "string"
+      },
+      {
+        "key": "quote_id",
+        "value": "",
+        "type": "string"
+      }
+    ],
+    "auth": {
+      "type": "bearer",
+      "bearer": [
+        {
+          "key": "token",
+          "value": "{{auth_token}}",
+          "type": "string"
+        }
+      ]
+    },
+    "item": [
+      {
+        "name": "Authentication",
+        "item": [
+          {
+            "name": "Sign Up",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"username\": \"test_user@example.com\",\n  \"password\": \"password123\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/v1/signup",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "signup"]
+              },
+              "description": "Create a new user account with MPC wallet generation"
+            },
+            "response": []
+          },
+          {
+            "name": "Sign In",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"username\": \"test_user@example.com\",\n  \"password\": \"password123\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/v1/signin",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "signin"]
+              },
+              "description": "Authenticate user and get JWT token"
+            },
+            "response": [],
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "exec": [
+                    "if (pm.response.code === 200) {",
+                    "    const responseJson = pm.response.json();",
+                    "    pm.collectionVariables.set('auth_token', responseJson.token);",
+                    "    console.log('Auth token saved:', responseJson.token);",
+                    "}"
+                  ],
+                  "type": "text/javascript"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "User Management",
+        "item": [
+          {
+            "name": "Get User Profile",
+            "request": {
+              "method": "GET",
+              "header": [
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "url": {
+                "raw": "{{base_url}}/api/v1/user",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "user"]
+              },
+              "description": "Get authenticated user's profile including MPC wallet public key"
+            },
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "Solana Operations",
+        "item": [
+          {
+            "name": "Get SOL Balance",
+            "request": {
+              "method": "GET",
+              "header": [
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "url": {
+                "raw": "{{base_url}}/api/v1/balance/sol",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "balance", "sol"]
+              },
+              "description": "Get SOL balance of user's MPC wallet"
+            },
+            "response": []
+          },
+          {
+            "name": "Get Token Balances",
+            "request": {
+              "method": "GET",
+              "header": [
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "url": {
+                "raw": "{{base_url}}/api/v1/balance/tokens",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "balance", "tokens"]
+              },
+              "description": "Get SPL token balances of user's MPC wallet"
+            },
+            "response": []
+          },
+          {
+            "name": "Get Swap Quote",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"inputMint\": \"So11111111111111111111111111111111111111112\",\n  \"outputMint\": \"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\",\n  \"inAmount\": 1000000000\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/v1/quote",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "quote"]
+              },
+              "description": "Get swap quote from Jupiter API. Example: SOL to USDC swap for 1 SOL (1000000000 lamports)"
+            },
+            "response": [],
+            "event": [
+              {
+                "listen": "test",
+                "script": {
+                  "exec": [
+                    "if (pm.response.code === 200) {",
+                    "    const responseJson = pm.response.json();",
+                    "    pm.collectionVariables.set('quote_id', responseJson.id);",
+                    "    console.log('Quote ID saved:', responseJson.id);",
+                    "}"
+                  ],
+                  "type": "text/javascript"
+                }
+              }
+            ]
+          },
+          {
+            "name": "Execute Swap",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"id\": \"{{quote_id}}\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/v1/swap",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "swap"]
+              },
+              "description": "Execute a swap using a previously obtained quote ID"
+            },
+            "response": []
+          },
+          {
+            "name": "Send SOL Transaction",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"to\": \"11111111111111111111111111111112\",\n  \"amount\": 1000000,\n  \"mint\": null\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/v1/send",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "send"]
+              },
+              "description": "Send SOL to another address. Amount is in lamports (1 SOL = 1,000,000,000 lamports). Set mint to null for SOL transfers."
+            },
+            "response": []
+          },
+          {
+            "name": "Send SPL Token Transaction",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{auth_token}}"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"to\": \"11111111111111111111111111111112\",\n  \"amount\": 1000000,\n  \"mint\": \"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/v1/send",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "send"]
+              },
+              "description": "Send SPL tokens to another address. Specify the token mint address. Note: SPL token transfers are not yet implemented in the backend."
+            },
+            "response": []
+          }
+        ]
+      },
+      {
+        "name": "MPC System",
+        "item": [
+          {
+            "name": "MPC Health Check",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}/api/v1/mpc/health",
+                "host": ["{{base_url}}"],
+                "path": ["api", "v1", "mpc", "health"]
+              },
+              "description": "Check the health status of MPC servers (ports 8081, 8082, 8083)"
+            },
+            "response": []
+          }
+        ]
+      }
+    ]
+}

@@ -1,10 +1,13 @@
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{info, error, debug};
+use tracing::{info, error};
 use uuid::Uuid;
-use store::redis::{RedisStore, JupiterQuoteResponse};
+use store::{Store, redis::{RedisStore, JupiterQuoteResponse}};
 use crate::auth::get_user_id_from_request;
-use crate::solana_client::{SolanaRpcClient, TokenBalance};
+use frost_mpc::solana::SolanaMPCClient;
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::{pubkey::Pubkey, system_instruction, transaction::Transaction};
+use std::str::FromStr;
 
 #[derive(Deserialize, Debug)]
 pub struct QuoteRequest {
@@ -54,6 +57,14 @@ pub struct SwapRequest {
     pub id: String,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct SendRequest {
+    pub to: String,
+    pub amount: u64,
+    #[serde(rename = "mint")]
+    pub mint: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct SwapResponse {
     pub success: bool,
@@ -62,12 +73,23 @@ pub struct SwapResponse {
 
 #[derive(Serialize)]
 pub struct BalanceResponse {
-    // Add fields when implementing
+    pub balance: u64, // lamports
 }
 
 #[derive(Serialize)]
-pub struct TokenBalanceResponse {
-    // Add fields when implementing
+pub struct TokenBalance {
+    pub balance: u64,
+    #[serde(rename = "tokenMint")]
+    pub token_mint: String,
+    pub symbol: String,
+    pub decimals: u8,
+}
+
+#[derive(Serialize)]
+pub struct SendResponse {
+    pub success: bool,
+    pub signature: String,
+    pub message: String,
 }
 
 #[actix_web::post("/api/v1/quote")]
@@ -75,8 +97,9 @@ pub async fn quote(
     req: web::Json<QuoteRequest>, 
     http_req: HttpRequest,
     redis_store: web::Data<RedisStore>,
+    store: web::Data<Store>,
 ) -> Result<HttpResponse> {    
-    let _user_id = match get_user_id_from_request(&http_req) {
+    let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Quote request from authenticated user: {}", id);
             id
@@ -86,14 +109,78 @@ pub async fn quote(
         }
     };
 
-    // TODO: handle check balance user
-    /**
-     * 1. Call API from MPC to get user wallet
-     * 
-     * 2. Check current balance of user wallet with input token. 
-     * 
-     * 3. If current balance < inputAmount - return error
-     */
+    // Get user and MPC wallet
+    let user = match store.get_user_by_id(&user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found: {}", user_id);
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "User not found"
+            })));
+        }
+        Err(e) => {
+            error!("Database error getting user: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
+    };
+
+    let wallet_pubkey = match user.mpc_wallet_pubkey {
+        Some(pubkey) => pubkey,
+        None => {
+            error!("User {} has no MPC wallet", user_id);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "No MPC wallet found. Please contact support."
+            })));
+        }
+    };
+
+    // Check balance logic here
+    let wallet_address = match Pubkey::from_str(&wallet_pubkey) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Invalid wallet address"
+            })));
+        }
+    };
+
+    // For SOL native token
+    if req.input_mint == "So11111111111111111111111111111111111111112" {
+        let balance_result = tokio::task::spawn_blocking({
+            let wallet_address = wallet_address;
+            move || {
+                let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+                rpc_client.get_balance(&wallet_address)
+            }
+        }).await;
+
+        match balance_result {
+            Ok(Ok(balance)) => {
+                if balance < req.in_amount {
+                    return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                        "error": "Insufficient balance"
+                    })));
+                }
+            }
+            Ok(Err(e)) => {
+                error!("Failed to get SOL balance: {}", e);
+                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Failed to check balance"
+                })));
+            }
+            Err(e) => {
+                error!("Task join error: {}", e);
+                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Internal server error"
+                })));
+            }
+        }
+    }
+    // For SPL tokens, you would need to check token account balance
+    // This is simplified for now
     
     let slippage_bps = 50;
     
@@ -199,9 +286,9 @@ pub async fn swap(
 }
 
 #[actix_web::get("/api/v1/balance/sol")]
-pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
+pub async fn sol_balance(http_req: HttpRequest, store: web::Data<Store>) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let _user_id = match get_user_id_from_request(&http_req) {
+    let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("SOL balance request from authenticated user: {}", id);
             id
@@ -211,18 +298,75 @@ pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
         }
     };
     
-    // TODO: Implement SOL balance logic using user_id
-    let response = BalanceResponse {
-        // Add fields when implementing
+    // Get user and MPC wallet
+    let user = match store.get_user_by_id(&user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found: {}", user_id);
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "User not found"
+            })));
+        }
+        Err(e) => {
+            error!("Database error getting user: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
     };
-    
-    Ok(HttpResponse::Ok().json(response))
+
+    let wallet_pubkey = match user.mpc_wallet_pubkey {
+        Some(pubkey) => pubkey,
+        None => {
+            error!("User {} has no MPC wallet", user_id);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "No MPC wallet found. Please contact support."
+            })));
+        }
+    };
+
+    let wallet_address = match Pubkey::from_str(&wallet_pubkey) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Invalid wallet address"
+            })));
+        }
+    };
+
+    let balance_result = tokio::task::spawn_blocking({
+        let wallet_address = wallet_address;
+        move || {
+            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+            rpc_client.get_balance(&wallet_address)
+        }
+    }).await;
+
+    match balance_result {
+        Ok(Ok(balance)) => {
+            let response = BalanceResponse { balance };
+            Ok(HttpResponse::Ok().json(response))
+        }
+        Ok(Err(e)) => {
+            error!("Failed to get SOL balance for {}: {}", wallet_pubkey, e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get balance"
+            })))
+        }
+        Err(e) => {
+            error!("Task join error: {}", e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })))
+        }
+    }
 }
 
 #[actix_web::get("/api/v1/balance/tokens")]
-pub async fn token_balance(http_req: HttpRequest) -> Result<HttpResponse> {
+pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let _user_id = match get_user_id_from_request(&http_req) {
+    let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Token balance request from authenticated user: {}", id);
             id
@@ -232,10 +376,295 @@ pub async fn token_balance(http_req: HttpRequest) -> Result<HttpResponse> {
         }
     };
     
-    // TODO: Implement token balance logic using user_id
-    let response = TokenBalanceResponse {
-        // Add fields when implementing
+    // Get user and MPC wallet
+    let user = match store.get_user_by_id(&user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found: {}", user_id);
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "User not found"
+            })));
+        }
+        Err(e) => {
+            error!("Database error getting user: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
     };
+
+    let _wallet_pubkey = match user.mpc_wallet_pubkey {
+        Some(pubkey) => pubkey,
+        None => {
+            error!("User {} has no MPC wallet", user_id);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "No MPC wallet found. Please contact support."
+            })));
+        }
+    };
+
+    // For now, return empty token list
+    // In production, you would fetch token accounts from the wallet
+    let response: Vec<TokenBalance> = vec![];
+    
+    Ok(HttpResponse::Ok().json(response))
+}
+
+#[actix_web::post("/api/v1/send")]
+pub async fn send_transaction(
+    req: web::Json<SendRequest>,
+    http_req: HttpRequest,
+    store: web::Data<Store>,
+    _mpc_client: web::Data<SolanaMPCClient>,
+) -> Result<HttpResponse> {
+    let user_id = match get_user_id_from_request(&http_req) {
+        Ok(id) => {
+            info!("Send transaction request from authenticated user: {}", id);
+            id
+        }
+        Err(response) => {
+            return Ok(response);
+        }
+    };
+
+    // Get user and MPC wallet
+    let user = match store.get_user_by_id(&user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found: {}", user_id);
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "User not found"
+            })));
+        }
+        Err(e) => {
+            error!("Database error getting user: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
+    };
+
+    let wallet_pubkey = match user.mpc_wallet_pubkey {
+        Some(pubkey) => pubkey,
+        None => {
+            error!("User {} has no MPC wallet", user_id);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "No MPC wallet found. Please contact support."
+            })));
+        }
+    };
+
+    let from_pubkey = match Pubkey::from_str(&wallet_pubkey) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Invalid wallet address"
+            })));
+        }
+    };
+
+    let to_pubkey = match Pubkey::from_str(&req.to) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("Invalid recipient address {}: {}", req.to, e);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid recipient address"
+            })));
+        }
+    };
+
+    // Check balance first
+    let balance_result = tokio::task::spawn_blocking({
+        let from_pubkey = from_pubkey;
+        move || {
+            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+            rpc_client.get_balance(&from_pubkey)
+        }
+    }).await;
+
+    match balance_result {
+        Ok(Ok(balance)) => {
+            if balance < req.amount {
+                return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "Insufficient balance"
+                })));
+            }
+        }
+        Ok(Err(e)) => {
+            error!("Failed to check balance: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to check balance"
+            })));
+        }
+        Err(e) => {
+            error!("Task join error: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
+    }
+
+    // Create transaction
+    let recent_blockhash_result = tokio::task::spawn_blocking({
+        move || {
+            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+            rpc_client.get_latest_blockhash()
+        }
+    }).await;
+
+    let recent_blockhash = match recent_blockhash_result {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(e)) => {
+            error!("Failed to get recent blockhash: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to create transaction"
+            })));
+        }
+        Err(e) => {
+            error!("Task join error: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
+    };
+
+    let instruction = if req.mint.is_some() {
+        // Handle SPL token transfer (simplified - would need more logic)
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "SPL token transfers not implemented yet"
+        })));
+    } else {
+        // SOL transfer
+        system_instruction::transfer(&from_pubkey, &to_pubkey, req.amount)
+    };
+
+    let mut transaction = Transaction::new_with_payer(&[instruction], Some(&from_pubkey));
+    transaction.message.recent_blockhash = recent_blockhash;
+
+    // Sign with MPC
+    let session_id = Uuid::new_v4().to_string();
+    let mut mpc_client_mut = SolanaMPCClient::new();
+    
+    match mpc_client_mut.sign_solana_transaction(&user_id, &transaction, &session_id).await {
+        Ok(signing_result) => {
+            if !signing_result.is_valid {
+                error!("MPC signature validation failed for user {}", user_id);
+                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Transaction signing failed"
+                })));
+            }
+
+            // Send to network
+            let send_result = tokio::task::spawn_blocking({
+                let transaction = signing_result.transaction.clone();
+                move || {
+                    let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+                    rpc_client.send_and_confirm_transaction(&transaction)
+                }
+            }).await;
+
+            match send_result {
+                Ok(Ok(signature)) => {
+                    info!("Transaction sent successfully: {}", signature);
+                    let response = SendResponse {
+                        success: true,
+                        signature: signature.to_string(),
+                        message: "Transaction sent successfully".to_string(),
+                    };
+                    Ok(HttpResponse::Ok().json(response))
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to send transaction: {}", e);
+                    Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": "Failed to send transaction"
+                    })))
+                }
+                Err(e) => {
+                    error!("Task join error: {}", e);
+                    Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": "Internal server error"
+                    })))
+                }
+            }
+        }
+        Err(e) => {
+            error!("MPC signing failed for user {}: {}", user_id, e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Transaction signing failed"
+            })))
+        }
+    }
+}
+
+#[actix_web::get("/api/v1/mpc/health")]
+pub async fn mpc_health() -> Result<HttpResponse> {
+    info!("MPC health check requested");
+    
+    let mut servers_status = Vec::new();
+    
+    for port in [8081, 8082, 8083] {
+        let client = reqwest::Client::new();
+        let status = match client.get(&format!("http://localhost:{}/health", port)).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        info!("MPC server {} is healthy", port);
+                        serde_json::json!({
+                            "port": port,
+                            "status": "healthy",
+                            "details": data
+                        })
+                    }
+                    Err(_) => {
+                        serde_json::json!({
+                            "port": port,
+                            "status": "unhealthy",
+                            "error": "Invalid response format"
+                        })
+                    }
+                }
+            }
+            Ok(resp) => {
+                error!("MPC server {} returned error status: {}", port, resp.status());
+                serde_json::json!({
+                    "port": port,
+                    "status": "unhealthy",
+                    "error": format!("HTTP {}", resp.status())
+                })
+            }
+            Err(e) => {
+                error!("Failed to connect to MPC server {}: {}", port, e);
+                serde_json::json!({
+                    "port": port,
+                    "status": "unreachable",
+                    "error": e.to_string()
+                })
+            }
+        };
+        servers_status.push(status);
+    }
+    
+    let healthy_count = servers_status.iter()
+        .filter(|s| s["status"] == "healthy")
+        .count();
+    
+    let overall_status = if healthy_count >= 2 {
+        "operational" // Threshold met for MPC operations
+    } else if healthy_count > 0 {
+        "degraded" // Some servers available but below threshold
+    } else {
+        "down" // No servers available
+    };
+    
+    let response = serde_json::json!({
+        "overall_status": overall_status,
+        "healthy_servers": healthy_count,
+        "total_servers": 3,
+        "threshold_required": 2,
+        "servers": servers_status,
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
     
     Ok(HttpResponse::Ok().json(response))
 }
