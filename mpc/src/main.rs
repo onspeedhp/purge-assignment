@@ -119,7 +119,7 @@ async fn frost_round1(
 
     // Extract participant ID from the server-specific user ID
     let participant_id = get_server_participant_id();
-    
+
     Ok(HttpResponse::Ok().json(FrostRound1Response {
         participant: participant_id,
         commitments: serde_json::to_value(&commitments).unwrap(),
@@ -300,34 +300,6 @@ async fn frost_keygen(
     .into())
 }
 
-/// FROST Key Generation with specific key package (for coordinated distribution)
-async fn frost_keygen_with_package(
-    state: Data<AppState>,
-    Json(payload): Json<FrostKeygenWithPackageRequest>,
-) -> Result<HttpResponse, Error> {
-    // Get this server's participant ID
-    let participant_id = get_server_participant_id();
-    let server_user_id = format!("{}_mpc_server_{}", payload.user_id, participant_id);
-
-    // Store the provided key package directly in database
-    state
-        .db
-        .store_key_share(
-            &server_user_id,
-            &payload.public_key,
-            &payload.key_package_json,
-        )
-        .await
-        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
-
-    Ok(HttpResponse::Ok().json(FrostKeygenResponse {
-        participant: participant_id,
-        public_key: payload.public_key,
-        success: true,
-        user_id: server_user_id,
-    }))
-}
-
 /// Get this server's participant ID based on port or environment variable
 fn get_server_participant_id() -> u16 {
     // Try to get from environment variable first
@@ -395,10 +367,6 @@ async fn main() -> std::io::Result<()> {
             .route("/status", actix_web::web::get().to(server_status))
             // FROST MPC endpoints
             .route("/frost/keygen", post().to(frost_keygen))
-            .route(
-                "/frost/keygen-with-package",
-                post().to(frost_keygen_with_package),
-            )
             .route("/frost/round1", post().to(frost_round1))
             .route("/frost/round2", post().to(frost_round2))
             .route("/frost/aggregate", post().to(frost_aggregate))

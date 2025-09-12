@@ -211,7 +211,10 @@ impl MPCServerClient {
     }
 
     /// Get key share by user ID from MPC server
-    pub async fn get_key_share_by_user_id(&self, user_id: &str) -> Result<crate::database::KeyShare, AppError> {
+    pub async fn get_key_share_by_user_id(
+        &self,
+        user_id: &str,
+    ) -> Result<crate::database::KeyShare, AppError> {
         let url = format!(
             "http://{}:{}/frost/key-share/{}",
             self.config.host, self.config.port, user_id
@@ -349,44 +352,58 @@ impl DistributedMPC {
         // Check if user already has key shares - if so, retrieve them
         let mut existing_key_packages = BTreeMap::new();
         let mut all_servers_have_keys = true;
-        
+
         for (i, client) in self.server_clients.iter().enumerate() {
             let server_user_id = format!("{}_mpc_server_{}", user_id, i + 1);
             match client.get_key_share_by_user_id(&server_user_id).await {
                 Ok(key_share) => {
-                    println!("  Found existing key share for server {} (user: {})", i + 1, server_user_id);
+                    println!(
+                        "  Found existing key share for server {} (user: {})",
+                        i + 1,
+                        server_user_id
+                    );
                     // Parse the key package from the stored private key
-                    let key_package: frost::keys::KeyPackage = serde_json::from_str(&key_share.private_key)
-                        .map_err(|e| AppError::InternalError(format!("Failed to deserialize key package: {}", e)))?;
+                    let key_package: frost::keys::KeyPackage =
+                        serde_json::from_str(&key_share.private_key).map_err(|e| {
+                            AppError::InternalError(format!(
+                                "Failed to deserialize key package: {}",
+                                e
+                            ))
+                        })?;
                     existing_key_packages.insert(*key_package.identifier(), key_package);
                 }
                 Err(_) => {
-                    println!("  No existing key share found for server {} (user: {})", i + 1, server_user_id);
+                    println!(
+                        "  No existing key share found for server {} (user: {})",
+                        i + 1,
+                        server_user_id
+                    );
                     all_servers_have_keys = false;
                 }
             }
         }
 
         if all_servers_have_keys && existing_key_packages.len() >= threshold as usize {
-            println!("  ✅ User '{}' already has key shares on all servers, reusing them", user_id);
+            println!(
+                "  ✅ User '{}' already has key shares on all servers, reusing them",
+                user_id
+            );
             // We need to reconstruct the pubkey_package from the first key package
             // since we can't create it from individual key packages
             let first_key_package = existing_key_packages.values().next().unwrap();
             let verifying_key = first_key_package.verifying_key();
-            
+
             // Create verifying shares from key packages
             let mut verifying_shares = BTreeMap::new();
             for (identifier, key_package) in &existing_key_packages {
                 verifying_shares.insert(*identifier, key_package.verifying_share().clone());
             }
-            
-            let pubkey_package = frost::keys::PublicKeyPackage::new(
-                verifying_shares,
-                verifying_key.clone(),
-            );
+
+            let pubkey_package =
+                frost::keys::PublicKeyPackage::new(verifying_shares, verifying_key.clone());
             self.pubkey_package = Some(pubkey_package.clone());
             self.threshold = Some(threshold);
-            return Ok(DistributedKeygenResult { 
+            return Ok(DistributedKeygenResult {
                 group_public_key: pubkey_package.verifying_key().serialize().unwrap().to_vec(),
                 participants: existing_key_packages.keys().cloned().collect(),
                 pubkey_package,
@@ -489,7 +506,9 @@ impl DistributedMPC {
             .take(threshold as usize)
         {
             let server_user_id = format!("{}_mpc_server_{}", user_id, i + 1);
-            let response = client.send_round1_request(&server_user_id, session_id).await?;
+            let response = client
+                .send_round1_request(&server_user_id, session_id)
+                .await?;
             round1_responses.push(response);
             println!("    Server {}: Generated commitments", i + 1);
         }
@@ -539,7 +558,8 @@ impl DistributedMPC {
         // Collect signature shares
         let mut signature_shares = BTreeMap::new();
         for response in &round2_responses {
-            let identifier: frost::Identifier = response.participant.try_into().expect("should be nonzero");
+            let identifier: frost::Identifier =
+                response.participant.try_into().expect("should be nonzero");
             let signature_share: frost::round2::SignatureShare =
                 serde_json::from_value(response.signature_share.clone())
                     .map_err(|e| AppError::InternalError(e.to_string()))?;
