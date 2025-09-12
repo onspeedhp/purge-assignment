@@ -2,6 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, error, debug};
 use uuid::Uuid;
+use store::redis::{RedisStore, JupiterQuoteResponse};
 use crate::auth::get_user_id_from_request;
 
 #[derive(Deserialize, Debug)]
@@ -12,34 +13,6 @@ pub struct QuoteRequest {
     pub output_mint: String,
     #[serde(rename = "inAmount")]
     pub in_amount: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct JupiterQuoteResponse {
-    #[serde(rename = "inputMint")]
-    pub input_mint: String,
-    #[serde(rename = "inAmount")]
-    pub in_amount: String,
-    #[serde(rename = "outputMint")]
-    pub output_mint: String,
-    #[serde(rename = "outAmount")]
-    pub out_amount: String,
-    #[serde(rename = "otherAmountThreshold")]
-    pub other_amount_threshold: String,
-    #[serde(rename = "swapMode")]
-    pub swap_mode: String,
-    #[serde(rename = "slippageBps")]
-    pub slippage_bps: u64,
-    #[serde(rename = "platformFee")]
-    pub platform_fee: Option<String>,
-    #[serde(rename = "priceImpactPct")]
-    pub price_impact_pct: String,
-    #[serde(rename = "routePlan")]
-    pub route_plan: Vec<RoutePlan>,
-    #[serde(rename = "contextSlot")]
-    pub context_slot: u64,
-    #[serde(rename = "timeTaken")]
-    pub time_taken: f64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -68,33 +41,41 @@ pub struct SwapInfo {
     pub fee_mint: String,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct QuoteResponse {
     #[serde(rename = "outAmount")]
     pub out_amount: String,
     pub id: String,
 }
 
-
 #[derive(Deserialize)]
 pub struct SwapRequest {
+    pub id: String,
 }
 
 #[derive(Serialize)]
 pub struct SwapResponse {
+    pub success: bool,
+    pub message: String,
 }
 
 #[derive(Serialize)]
 pub struct BalanceResponse {
+    // Add fields when implementing
 }
 
 #[derive(Serialize)]
 pub struct TokenBalanceResponse {
+    // Add fields when implementing
 }
 
 #[actix_web::post("/api/v1/quote")]
-pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Result<HttpResponse> {    
-    let user_id = match get_user_id_from_request(&http_req) {
+pub async fn quote(
+    req: web::Json<QuoteRequest>, 
+    http_req: HttpRequest,
+    redis_store: web::Data<RedisStore>,
+) -> Result<HttpResponse> {    
+    let _user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Quote request from authenticated user: {}", id);
             id
@@ -155,12 +136,13 @@ pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Resul
     
     let quote_id = Uuid::new_v4().to_string();
     
-    /**
-     * Initalize cache (redis)
-     * 
-     * store tmp qoute request with key is quote_id
-     * 
-     */
+    // Store quote in Redis with 5 minutes TTL
+    if let Err(e) = redis_store.store_quote(&quote_id, &jupiter_response, 300).await {
+        error!("Failed to store quote in Redis: {}", e);
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Failed to cache quote"
+        })));
+    }
     
     let response = QuoteResponse {
         out_amount: jupiter_response.other_amount_threshold, // This is the worst price with slippage
@@ -170,9 +152,13 @@ pub async fn quote(req: web::Json<QuoteRequest>, http_req: HttpRequest) -> Resul
 }
 
 #[actix_web::post("/api/v1/swap")]
-pub async fn swap(req: web::Json<SwapRequest>, http_req: HttpRequest) -> Result<HttpResponse> {
+pub async fn swap(
+    req: web::Json<SwapRequest>, 
+    http_req: HttpRequest,
+    redis_store: web::Data<RedisStore>,
+) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let user_id = match get_user_id_from_request(&http_req) {
+    let _user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Swap request from authenticated user: {}", id);
             id
@@ -182,8 +168,31 @@ pub async fn swap(req: web::Json<SwapRequest>, http_req: HttpRequest) -> Result<
         }
     };
     
-    // TODO: Implement swap logic using user_id
-    let response = SwapResponse {};
+    // Check if quote exists in Redis
+    let _quote_data = match redis_store.get_quote(&req.id).await {
+        Ok(Some(quote_data)) => quote_data,
+        Ok(None) => {
+            error!("Quote {} not found in Redis", req.id);
+            return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Quote not found or expired. Please request a new quote."
+            })));
+        }
+        Err(e) => {
+            error!("Failed to retrieve quote from Redis: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to retrieve quote"
+            })));
+        }
+    };
+    
+    info!("Found quote {} in Redis, proceeding with swap for user {}", req.id, _user_id);
+    
+    // TODO: Implement actual swap logic using the cached quote data
+    // For now, just return success
+    let response = SwapResponse {
+        success: true,
+        message: format!("Swap initiated for quote {}", req.id),
+    };
     
     Ok(HttpResponse::Ok().json(response))
 }
@@ -191,7 +200,7 @@ pub async fn swap(req: web::Json<SwapRequest>, http_req: HttpRequest) -> Result<
 #[actix_web::get("/api/v1/balance/sol")]
 pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let user_id = match get_user_id_from_request(&http_req) {
+    let _user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("SOL balance request from authenticated user: {}", id);
             id
@@ -203,6 +212,7 @@ pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
     
     // TODO: Implement SOL balance logic using user_id
     let response = BalanceResponse {
+        // Add fields when implementing
     };
     
     Ok(HttpResponse::Ok().json(response))
@@ -211,7 +221,7 @@ pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
 #[actix_web::get("/api/v1/balance/tokens")]
 pub async fn token_balance(http_req: HttpRequest) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let user_id = match get_user_id_from_request(&http_req) {
+    let _user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Token balance request from authenticated user: {}", id);
             id
@@ -223,7 +233,7 @@ pub async fn token_balance(http_req: HttpRequest) -> Result<HttpResponse> {
     
     // TODO: Implement token balance logic using user_id
     let response = TokenBalanceResponse {
-        
+        // Add fields when implementing
     };
     
     Ok(HttpResponse::Ok().json(response))
