@@ -474,51 +474,48 @@ pub async fn send_transaction(
         }
     };
 
-    // Check balance first
-    let balance_result = tokio::task::spawn_blocking({
-        let from_pubkey = from_pubkey;
-        move || {
-            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-            rpc_client.get_balance(&from_pubkey)
-        }
-    }).await;
-
-    match balance_result {
-        Ok(Ok(balance)) => {
-            if balance < req.amount {
-                return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": "Insufficient balance"
-                })));
+    // Check if MPC servers are running
+    let mut healthy_servers = 0;
+    for port in [8081, 8082, 8083] {
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client.get(&format!("http://localhost:{}/health", port)).send().await {
+            if resp.status().is_success() {
+                healthy_servers += 1;
             }
-        }
-        Ok(Err(e)) => {
-            error!("Failed to check balance: {}", e);
-            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Failed to check balance"
-            })));
-        }
-        Err(e) => {
-            error!("Task join error: {}", e);
-            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Internal server error"
-            })));
         }
     }
 
-    // Create transaction
-    let recent_blockhash_result = tokio::task::spawn_blocking({
+    if healthy_servers < 2 {
+        error!("Not enough MPC servers running: {}/3", healthy_servers);
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "MPC service unavailable. Please try again later."
+        })));
+    }
+
+    // Only handle SOL transfers for now
+    if req.mint.is_some() {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "SPL token transfers not implemented yet"
+        })));
+    }
+
+    // Check balance and get recent blockhash using spawn_blocking
+    let balance_and_hash_result = tokio::task::spawn_blocking({
+        let from_pubkey = from_pubkey;
         move || {
             let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-            rpc_client.get_latest_blockhash()
+            let balance = rpc_client.get_balance(&from_pubkey)?;
+            let blockhash = rpc_client.get_latest_blockhash()?;
+            Ok::<(u64, solana_sdk::hash::Hash), Box<dyn std::error::Error + Send + Sync>>((balance, blockhash))
         }
     }).await;
 
-    let recent_blockhash = match recent_blockhash_result {
-        Ok(Ok(hash)) => hash,
+    let (balance, recent_blockhash) = match balance_and_hash_result {
+        Ok(Ok((bal, hash))) => (bal, hash),
         Ok(Err(e)) => {
-            error!("Failed to get recent blockhash: {}", e);
+            error!("RPC error: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Failed to create transaction"
+                "error": "Failed to connect to Solana network. Please ensure local validator is running."
             })));
         }
         Err(e) => {
@@ -529,69 +526,95 @@ pub async fn send_transaction(
         }
     };
 
-    let instruction = if req.mint.is_some() {
-        // Handle SPL token transfer (simplified - would need more logic)
+    // Check sufficient balance
+    if balance < req.amount {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "SPL token transfers not implemented yet"
+            "error": format!("Insufficient balance. Available: {} lamports, Required: {} lamports", balance, req.amount)
         })));
-    } else {
-        // SOL transfer
-        system_instruction::transfer(&from_pubkey, &to_pubkey, req.amount)
-    };
+    }
 
-    let mut transaction = Transaction::new_with_payer(&[instruction], Some(&from_pubkey));
+    info!("Creating transfer transaction from {} to {} for {} lamports", from_pubkey, to_pubkey, req.amount);
+    info!("Recent blockhash: {}", recent_blockhash);
+
+    // Create transfer instruction (like in test.rs line 199-203)
+    let transfer_instruction = system_instruction::transfer(
+        &from_pubkey,
+        &to_pubkey,
+        req.amount,
+    );
+
+    // Create transaction (like in test.rs line 206-208)
+    let mut transaction = Transaction::new_with_payer(&[transfer_instruction], Some(&from_pubkey));
     transaction.message.recent_blockhash = recent_blockhash;
 
-    // Sign with MPC
-    let session_id = Uuid::new_v4().to_string();
-    let mut mpc_client_mut = SolanaMPCClient::new();
+    info!("Transaction created, signing with FROST MPC...");
+
+    // Sign transaction with FROST MPC (like in test.rs line 213-216)
+    let session_id = format!("transaction_{}", Uuid::new_v4());
+    let mut solana_mpc = SolanaMPCClient::new();
     
-    match mpc_client_mut.sign_solana_transaction(&user_id, &transaction, &session_id).await {
-        Ok(signing_result) => {
-            if !signing_result.is_valid {
-                error!("MPC signature validation failed for user {}", user_id);
-                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": "Transaction signing failed"
-                })));
-            }
-
-            // Send to network
-            let send_result = tokio::task::spawn_blocking({
-                let transaction = signing_result.transaction.clone();
-                move || {
-                    let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-                    rpc_client.send_and_confirm_transaction(&transaction)
-                }
-            }).await;
-
-            match send_result {
-                Ok(Ok(signature)) => {
-                    info!("Transaction sent successfully: {}", signature);
-                    let response = SendResponse {
-                        success: true,
-                        signature: signature.to_string(),
-                        message: "Transaction sent successfully".to_string(),
-                    };
-                    Ok(HttpResponse::Ok().json(response))
-                }
-                Ok(Err(e)) => {
-                    error!("Failed to send transaction: {}", e);
-                    Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                        "error": "Failed to send transaction"
-                    })))
-                }
-                Err(e) => {
-                    error!("Task join error: {}", e);
-                    Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                        "error": "Internal server error"
-                    })))
-                }
-            }
-        }
+    let signing_result = match solana_mpc.sign_solana_transaction(&user_id, &transaction, &session_id).await {
+        Ok(result) => result,
         Err(e) => {
             error!("MPC signing failed for user {}: {}", user_id, e);
+            
+            // Check if it's the "No threshold available" error
+            if e.to_string().contains("No threshold available") {
+                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "MPC wallet not properly initialized. Please contact support to regenerate your wallet."
+                })));
+            }
+            
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Transaction signing failed: {}", e)
+            })));
+        }
+    };
+
+    info!("✅ FROST MPC signing successful!");
+    info!("Transaction signature: {}", signing_result.signature);
+    info!("Signature valid: {}", signing_result.is_valid);
+
+    if !signing_result.is_valid {
+        error!("FROST signature verification failed");
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Transaction signing failed - signature verification failed"
+        })));
+    }
+
+    // Send transaction to network (like in test.rs line 233)
+    info!("Sending transaction to Solana network...");
+    
+    let send_result = tokio::task::spawn_blocking({
+        let signed_transaction = signing_result.transaction.clone();
+        move || {
+            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+            rpc_client.send_and_confirm_transaction(&signed_transaction)
+        }
+    }).await;
+
+    match send_result {
+        Ok(Ok(signature)) => {
+            info!("✅ Transaction sent successfully!");
+            info!("Transaction signature: {}", signature);
+            
+            let response = SendResponse {
+                success: true,
+                signature: signature.to_string(),
+                message: "Transaction sent successfully".to_string(),
+            };
+            Ok(HttpResponse::Ok().json(response))
+        }
+        Ok(Err(e)) => {
+            error!("❌ Transaction failed: {}", e);
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Transaction signing failed"
+                "error": format!("Failed to send transaction: {}", e)
+            })))
+        }
+        Err(e) => {
+            error!("Task join error: {}", e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
             })))
         }
     }
