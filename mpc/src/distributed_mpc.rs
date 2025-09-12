@@ -430,14 +430,20 @@ impl DistributedMPC {
             let server_id = (i + 1) as u16;
             let identifier = server_id.try_into().expect("should be nonzero");
 
+            print!("identifier: {:?}", server_id);
+
             if let Some(secret_share) = shares.get(&identifier) {
                 let key_package = frost::keys::KeyPackage::try_from(secret_share.clone())
                     .map_err(|e| AppError::InternalError(e.to_string()))?;
+
+                println!("key_package: {:?}", key_package);
 
                 // Send the key package to this server
                 let key_package_json = serde_json::to_string(&key_package)
                     .map_err(|e| AppError::InternalError(e.to_string()))?;
                 let public_key = hex::encode(pubkey_package.verifying_key().serialize().unwrap());
+
+                println!("public_key: {:?}", public_key);
 
                 // Store the key package directly in the server's database
                 let _response = client
@@ -449,6 +455,8 @@ impl DistributedMPC {
                         &public_key,
                     )
                     .await?;
+
+                println!("response: {:?}", _response);
 
                 println!(
                     "  Server {}: Key package distributed for user '{}' (participant {})",
