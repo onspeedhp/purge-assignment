@@ -1,4 +1,4 @@
-pub use tonic::{service::Interceptor, transport::ClientTlsConfig};
+pub use tonic::service::Interceptor;
 use {
     bytes::Bytes,
     futures::{
@@ -386,12 +386,7 @@ impl GeyserGrpcBuilder {
         }
     }
 
-    pub fn tls_config(self, tls_config: ClientTlsConfig) -> GeyserGrpcBuilderResult<Self> {
-        Ok(Self {
-            endpoint: self.endpoint.tls_config(tls_config)?,
-            ..self
-        })
-    }
+    // TLS config removed for simplicity
 
     // Geyser options
     pub fn send_compressed(self, encoding: CompressionEncoding) -> Self {

@@ -7,6 +7,7 @@ use redis::Client as RedisClient;
 
 mod routes;
 mod auth;
+mod solana_client;
 use routes::*;
 
 #[actix_web::main]
