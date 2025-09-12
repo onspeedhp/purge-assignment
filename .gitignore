@@ -7,3 +7,5 @@ specs/*
 mpc/logs/*
 
 **/.env
+
+test-ledger
