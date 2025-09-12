@@ -111,49 +111,6 @@ async fn test_frost_distributed_mpc() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Test Solana MPC integration using real API calls
-async fn test_solana_mpc() -> Result<(), Box<dyn std::error::Error>> {
-    println!("  Creating SolanaMPCClient instance...");
-    let mut solana_mpc = SolanaMPCClient::new();
-
-    println!("  Testing Solana keypair generation...");
-    let user_id = "solana_test_user_123";
-    let threshold = 2; // 2 out of 3 threshold
-
-    let keypair = solana_mpc
-        .generate_solana_keypair(user_id, threshold)
-        .await?;
-    println!("    ✅ Solana keypair generation successful");
-    println!("    Solana public key: {}", keypair.pubkey());
-
-    println!("  Testing Solana transaction signing...");
-    use solana_sdk::{hash::Hash, pubkey::Pubkey};
-
-    let to_pubkey = Pubkey::new_unique();
-    let _recent_blockhash = Hash::new_unique();
-    let transaction = SolanaMPCClient::create_transfer_transaction(
-        keypair.pubkey(),
-        &to_pubkey,
-        1_000_000, // 0.001 SOL
-    );
-
-    let session_id = "solana_test_session_123";
-    let signing_result = solana_mpc
-        .sign_solana_transaction(user_id, &keypair, &transaction, session_id)
-        .await?;
-
-    println!("    ✅ Solana transaction signing successful");
-    println!("    Transaction signature: {}", signing_result.signature);
-    println!("    Signature valid: {}", signing_result.is_valid);
-
-    if !signing_result.is_valid {
-        return Err("Solana signature verification failed".into());
-    }
-
-    println!("  ✅ Solana MPC test passed!");
-    Ok(())
-}
-
 /// Test Solana MPC with Faucet and On-Chain Transaction
 async fn test_solana_mpc_with_faucet() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Creating Solana MPC client...");
@@ -255,7 +212,7 @@ async fn test_solana_mpc_with_faucet() -> Result<(), Box<dyn std::error::Error>>
     // Step 4: Sign transaction with FROST MPC
     let session_id = "faucet_test_session_456";
     let signing_result = solana_mpc
-        .sign_solana_transaction(user_id, &keypair, &transaction, session_id)
+        .sign_solana_transaction(user_id, &transaction, session_id)
         .await?;
 
     println!("  ✅ FROST MPC signing successful!");

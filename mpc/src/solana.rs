@@ -100,7 +100,6 @@ impl SolanaMPCClient {
     pub async fn sign_solana_transaction(
         &self,
         user_id: &str,
-        _keypair: &SolanaFrostKeypair,
         transaction: &Transaction,
         session_id: &str,
     ) -> Result<SolanaFrostSigningResult, AppError> {
@@ -195,7 +194,7 @@ pub async fn solana_mpc_example() -> Result<(), AppError> {
     // Step 3: Sign the transaction using FROST MPC
     let session_id = "solana_session_123";
     let signing_result = solana_mpc
-        .sign_solana_transaction(user_id, &keypair, &transaction, session_id)
+        .sign_solana_transaction(user_id, &transaction, session_id)
         .await?;
 
     println!("Transaction signed: {}", signing_result.signature);
