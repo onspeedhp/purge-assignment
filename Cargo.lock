@@ -2449,9 +2449,18 @@ name = "indexer"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "dotenv",
  "futures",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "store",
+ "thiserror 1.0.69",
  "tokio",
  "tonic",
+ "tonic-health",
+ "tracing",
+ "tracing-subscriber",
  "yellowstone-grpc-proto",
 ]
 
@@ -7458,6 +7467,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -7555,6 +7565,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "tonic-health"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a82868bf299e0a1d2e8dce0dc33a46c02d6f045b2c1f1d6cc8dc3d0bf1812ef"
+dependencies = [
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]

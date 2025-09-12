@@ -4,6 +4,7 @@ use tracing::{info, error, debug};
 use uuid::Uuid;
 use store::redis::{RedisStore, JupiterQuoteResponse};
 use crate::auth::get_user_id_from_request;
+use crate::solana_client::{SolanaRpcClient, TokenBalance};
 
 #[derive(Deserialize, Debug)]
 pub struct QuoteRequest {

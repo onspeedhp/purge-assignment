@@ -6,6 +6,15 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 tonic = "0.14.2"
+tonic-health = "0.14.2"
 bytes = "1.10.1"
 futures = "0.3.31"
 yellowstone-grpc-proto = "9.0.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dotenv = "0.15"
+store = { path = "../store" }
