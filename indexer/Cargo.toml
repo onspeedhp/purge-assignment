@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+actix-web = "4.11.0"
+tracing-actix-web = "0.7"
 tokio = { version = "1.0", features = ["full"] }
 tonic = "0.14.2"
 tonic-health = "0.14.2"
