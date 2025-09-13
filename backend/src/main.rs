@@ -4,7 +4,6 @@ use store::{Store, redis::RedisStore};
 use tracing::info;
 use tracing_subscriber;
 use redis::Client as RedisClient;
-use frost_mpc::solana::SolanaMPCClient;
 
 mod routes;
 mod auth;
@@ -46,11 +45,9 @@ async fn main() -> std::io::Result<()> {
 
     info!("Starting server on http://127.0.0.1:8080");
     HttpServer::new(move || {
-        let mpc_client = SolanaMPCClient::new();
         App::new()
             .app_data(web::Data::new(store.clone()))
             .app_data(web::Data::new(redis_store.clone()))
-            .app_data(web::Data::new(mpc_client))
             .wrap(tracing_actix_web::TracingLogger::default())
             .service(sign_up)  
             .service(sign_in)
@@ -59,9 +56,7 @@ async fn main() -> std::io::Result<()> {
             .service(swap)
             .service(sol_balance)
             .service(token_balance)
-            .service(send_transaction)
-            .service(create_test_token)
-            .service(mpc_health)
+            // All wallet functionality is now integrated into auth endpoints
     })
     .bind("127.0.0.1:8080")?
     .run()

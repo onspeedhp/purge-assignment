@@ -20,9 +20,8 @@ tokio = { version = "1.47.1", features = ["full"] }
 uuid = { version = "1.0", features = ["v4"] }
 futures-util = "0.3"
 redis = { version = "0.32.5", features = ["tokio-comp"] }
-bcrypt = "0.15"
-# MPC and Solana dependencies
 frost-mpc = { path = "../mpc" }
+bcrypt = "0.15"
 solana-sdk = "2.0"
 solana-client = "2.0"
 solana-program = "2.0"
