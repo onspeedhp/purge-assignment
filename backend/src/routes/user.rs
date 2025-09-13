@@ -4,8 +4,9 @@ use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use std::env;
 use store::{Store, user::CreateUserRequest};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use crate::auth::get_user_id_from_request;
+use frost_mpc::solana::SolanaMPCClient;
 
 #[derive(Deserialize, Debug)]
 pub struct SignUpRequest {
@@ -22,6 +23,8 @@ pub struct SignInRequest {
 #[derive(Serialize)]
 pub struct UserResponse {
     pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mpc_wallet_pubkey: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,6 +47,7 @@ struct Claims {
 pub async fn sign_up(
     req: web::Json<SignUpRequest>,
     store: web::Data<Store>,
+    _mpc_client: web::Data<SolanaMPCClient>,
 ) -> Result<HttpResponse> {
     let create_user_req = CreateUserRequest {
         email: req.username.clone(), // Using username as email for now
@@ -52,28 +56,61 @@ pub async fn sign_up(
 
     match store.create_user(create_user_req).await {
         Ok(user) => {
-            let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key".to_string());
-            let now = Utc::now();
-            let exp = (now + Duration::hours(24)).timestamp() as usize;
-
             let user_id = user.id.clone();
+            
+            // Create MPC wallet for the user
+            info!("Creating MPC wallet for user: {}", user_id);
+            let mut mpc_client_mut = SolanaMPCClient::new();
+            
+            match mpc_client_mut.generate_solana_keypair_with_metadata(&user_id, 2).await {
+                Ok((keypair, pubkey_package_json)) => {
+                    let mpc_wallet_pubkey = keypair.pubkey().to_string();
+                    info!("MPC wallet created for user {}: {}", user_id, mpc_wallet_pubkey);
+                    
+                    // Update user with MPC wallet pubkey and metadata
+                    if let Err(e) = store.update_user_mpc_wallet_with_metadata(
+                        &user_id, 
+                        &mpc_wallet_pubkey,
+                        2, // threshold
+                        &pubkey_package_json
+                    ).await {
+                        error!("Failed to update user MPC wallet metadata: {}", e);
+                        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                            "error": "Failed to save MPC wallet metadata"
+                        })));
+                    }
+                    
+                    let secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key".to_string());
+                    let now = Utc::now();
+                    let exp = (now + Duration::hours(24)).timestamp() as usize;
 
-            let claims = Claims { sub: user.id, exp };
-            let _token = encode(
-                &Header::default(),
-                &claims,
-                &EncodingKey::from_secret(secret.as_ref()),
-            )
-            .map_err(|e| {
-                error!("Failed to generate JWT token: {}", e);
-                actix_web::error::ErrorInternalServerError(e)
-            })?;
+                    let claims = Claims { sub: user.id, exp };
+                    let _token = encode(
+                        &Header::default(),
+                        &claims,
+                        &EncodingKey::from_secret(secret.as_ref()),
+                    )
+                    .map_err(|e| {
+                        error!("Failed to generate JWT token: {}", e);
+                        actix_web::error::ErrorInternalServerError(e)
+                    })?;
 
-            let response = SignupResponse {
-                message: "signed up successfully".to_string(),
-            };
+                    let response = SignupResponse {
+                        message: "signed up successfully".to_string(),
+                    };
 
-            Ok(HttpResponse::Ok().json(response))
+                    Ok(HttpResponse::Ok().json(response))
+                }
+                Err(e) => {
+                    error!("Failed to create MPC wallet for user {}: {}", user_id, e);
+                    // For now, we'll still create the user but without MPC wallet
+                    // In production, you might want to rollback user creation
+                    let response = SignupResponse {
+                        message: "signed up successfully".to_string(),
+                    };
+                    Ok(HttpResponse::Ok().json(response))
+                }
+            }
         }
         Err(store::user::UserError::UserExists) => {
             warn!("Signup failed: User already exists - {}", req.username);
@@ -167,6 +204,7 @@ pub async fn get_user(req: HttpRequest, store: web::Data<Store>) -> Result<HttpR
         Ok(Some(user)) => {
             let response = UserResponse {
                 email: user.email,
+                mpc_wallet_pubkey: user.mpc_wallet_pubkey,
             };
             Ok(HttpResponse::Ok().json(response))
         }
@@ -204,6 +242,94 @@ pub async fn get_user(req: HttpRequest, store: web::Data<Store>) -> Result<HttpR
             error!("User already exists for ID: {}", user_id);
             Ok(HttpResponse::Conflict().json(serde_json::json!({
                 "error": "User already exists"
+            })))
+        }
+    }
+}
+
+/// Regenerate MPC wallet for a user
+#[actix_web::post("/api/v1/user/regenerate-mpc-wallet")]
+pub async fn regenerate_mpc_wallet(
+    req: HttpRequest,
+    store: web::Data<Store>,
+) -> Result<HttpResponse> {
+    let user_id = match get_user_id_from_request(&req) {
+        Ok(id) => {
+            info!("Regenerate MPC wallet request from authenticated user: {}", id);
+            id
+        }
+        Err(response) => {
+            return Ok(response);
+        }
+    };
+
+    // Check if user exists
+    let user = match store.get_user_by_id(&user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found: {}", user_id);
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "User not found"
+            })));
+        }
+        Err(e) => {
+            error!("Database error getting user: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
+    };
+
+    // Check if MPC servers are running
+    let mut healthy_servers = 0;
+    for port in [8081, 8082, 8083] {
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client.get(&format!("http://localhost:{}/health", port)).send().await {
+            if resp.status().is_success() {
+                healthy_servers += 1;
+            }
+        }
+    }
+
+    if healthy_servers < 2 {
+        error!("Not enough MPC servers running: {}/3", healthy_servers);
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "MPC service unavailable. Please try again later."
+        })));
+    }
+
+    // Generate new MPC wallet
+    info!("Regenerating MPC wallet for user: {}", user_id);
+    let mut mpc_client_mut = SolanaMPCClient::new();
+    
+    match mpc_client_mut.generate_solana_keypair_with_metadata(&user_id, 2).await {
+        Ok((keypair, pubkey_package_json)) => {
+            let mpc_wallet_pubkey = keypair.pubkey().to_string();
+            info!("New MPC wallet created for user {}: {}", user_id, mpc_wallet_pubkey);
+            
+            // Update user with new MPC wallet pubkey and metadata
+            if let Err(e) = store.update_user_mpc_wallet_with_metadata(
+                &user_id, 
+                &mpc_wallet_pubkey,
+                2, // threshold
+                &pubkey_package_json
+            ).await {
+                error!("Failed to update user MPC wallet metadata: {}", e);
+                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Failed to save new MPC wallet metadata"
+                })));
+            }
+            
+            Ok(HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "MPC wallet regenerated successfully",
+                "new_wallet_pubkey": mpc_wallet_pubkey
+            })))
+        }
+        Err(e) => {
+            error!("Failed to regenerate MPC wallet for user {}: {}", user_id, e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to regenerate MPC wallet: {}", e)
             })))
         }
     }

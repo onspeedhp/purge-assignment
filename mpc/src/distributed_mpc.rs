@@ -611,6 +611,28 @@ impl DistributedMPC {
             message: message.to_vec(),
         })
     }
+
+    /// Set existing wallet metadata (used when restoring from database)
+    pub fn set_existing_wallet(
+        &mut self,
+        threshold: u16,
+        pubkey_package: frost::keys::PublicKeyPackage,
+    ) {
+        self.threshold = Some(threshold);
+        self.pubkey_package = Some(pubkey_package);
+    }
+
+    /// Check if wallet is properly initialized
+    pub fn is_wallet_initialized(&self) -> bool {
+        self.threshold.is_some() && self.pubkey_package.is_some()
+    }
+
+    /// Get wallet public key if initialized
+    pub fn get_wallet_pubkey(&self) -> Option<Vec<u8>> {
+        self.pubkey_package.as_ref().map(|pkg| {
+            pkg.verifying_key().serialize().unwrap().to_vec()
+        })
+    }
 }
 
 // Request/Response types for MPC server communication

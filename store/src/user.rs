@@ -9,6 +9,9 @@ pub struct User {
     pub id: String,
     pub email: String,
     pub created_at: String,
+    pub mpc_wallet_pubkey: Option<String>,
+    pub mpc_threshold: Option<i32>,
+    pub mpc_pubkey_package: Option<String>,
 }
 
 #[derive(Debug)]
@@ -103,13 +106,16 @@ impl Store {
             id: user_id,
             email: request.email,
             created_at: created_at.to_rfc3339(),
+            mpc_wallet_pubkey: None, // Will be set when MPC wallet is created
+            mpc_threshold: None,
+            mpc_pubkey_package: None,
         };
 
         Ok(user)
     }
 
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, UserError> {
-        let row = sqlx::query("SELECT id, email, created_at FROM users WHERE id = $1")
+        let row = sqlx::query("SELECT id, email, created_at, mpc_wallet_pubkey, mpc_threshold, mpc_pubkey_package FROM users WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -126,6 +132,9 @@ impl Store {
                     created_at: row
                         .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
                         .to_rfc3339(),
+                    mpc_wallet_pubkey: row.get("mpc_wallet_pubkey"),
+                    mpc_threshold: row.get("mpc_threshold"),
+                    mpc_pubkey_package: row.get("mpc_pubkey_package"),
                 };
                 Ok(Some(user))
             }
@@ -135,7 +144,7 @@ impl Store {
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, UserError> {
         let row =
-            sqlx::query("SELECT id, email, password_hash, created_at FROM users WHERE email = $1")
+            sqlx::query("SELECT id, email, password_hash, created_at, mpc_wallet_pubkey, mpc_threshold, mpc_pubkey_package FROM users WHERE email = $1")
                 .bind(email)
                 .fetch_optional(&self.pool)
                 .await
@@ -152,6 +161,9 @@ impl Store {
                     created_at: row
                         .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
                         .to_rfc3339(),
+                    mpc_wallet_pubkey: row.get("mpc_wallet_pubkey"),
+                    mpc_threshold: row.get("mpc_threshold"),
+                    mpc_pubkey_package: row.get("mpc_pubkey_package"),
                 };
                 Ok(Some(user))
             }
@@ -188,5 +200,47 @@ impl Store {
             }
             None => Ok(None),
         }
+    }
+
+    pub async fn update_user_mpc_wallet(&self, user_id: &str, mpc_wallet_pubkey: &str) -> Result<(), UserError> {
+        info!("Updating MPC wallet for user: {}", user_id);
+        
+        sqlx::query("UPDATE users SET mpc_wallet_pubkey = $1 WHERE id = $2")
+            .bind(mpc_wallet_pubkey)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                error!("Database error while updating MPC wallet: {}", e);
+                UserError::DatabaseError(e.to_string())
+            })?;
+
+        Ok(())
+    }
+
+    pub async fn update_user_mpc_wallet_with_metadata(
+        &self,
+        user_id: &str,
+        mpc_wallet_pubkey: &str,
+        threshold: u16,
+        pubkey_package_json: &str,
+    ) -> Result<(), UserError> {
+        info!("Updating MPC wallet with metadata for user: {}", user_id);
+        
+        sqlx::query(
+            "UPDATE users SET mpc_wallet_pubkey = $1, mpc_threshold = $2, mpc_pubkey_package = $3 WHERE id = $4"
+        )
+        .bind(mpc_wallet_pubkey)
+        .bind(threshold as i32)
+        .bind(pubkey_package_json)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Database error while updating MPC wallet metadata: {}", e);
+            UserError::DatabaseError(e.to_string())
+        })?;
+
+        Ok(())
     }
 }

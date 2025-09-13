@@ -68,12 +68,28 @@ impl SolanaMPCClient {
         }
     }
 
-    /// Generate a Solana keypair using FROST MPC
-    pub async fn generate_solana_keypair(
+    /// Create a Solana MPC client with existing wallet metadata
+    pub fn with_existing_wallet(
+        threshold: u16,
+        pubkey_package_json: &str,
+    ) -> Result<Self, AppError> {
+        let pubkey_package: frost::keys::PublicKeyPackage = serde_json::from_str(pubkey_package_json)
+            .map_err(|e| AppError::InternalError(format!("Failed to deserialize pubkey package: {}", e)))?;
+        
+        let mut distributed_mpc = crate::distributed_mpc::DistributedMPC::new();
+        distributed_mpc.set_existing_wallet(threshold, pubkey_package);
+        
+        Ok(Self {
+            distributed_mpc,
+        })
+    }
+
+    /// Generate a Solana keypair using FROST MPC and return metadata
+    pub async fn generate_solana_keypair_with_metadata(
         &mut self,
         user_id: &str,
         threshold: u16,
-    ) -> Result<SolanaFrostKeypair, AppError> {
+    ) -> Result<(SolanaFrostKeypair, String), AppError> {
         println!(
             "Generating Solana keypair using FROST MPC for user '{}'...",
             user_id
@@ -88,12 +104,16 @@ impl SolanaMPCClient {
         // Convert to Solana keypair
         let solana_keypair = SolanaFrostKeypair::from_frost_result(&frost_result)?;
 
+        // Serialize pubkey package for storage
+        let pubkey_package_json = serde_json::to_string(&frost_result.pubkey_package)
+            .map_err(|e| AppError::InternalError(format!("Failed to serialize pubkey package: {}", e)))?;
+
         println!(
             "✅ Solana keypair generated! Public key: {}",
             solana_keypair.pubkey()
         );
 
-        Ok(solana_keypair)
+        Ok((solana_keypair, pubkey_package_json))
     }
 
     /// Sign a Solana transaction using FROST MPC
@@ -174,8 +194,8 @@ pub async fn solana_mpc_example() -> Result<(), AppError> {
     let user_id = "solana_user_123";
 
     // Step 1: Generate Solana keypair using FROST MPC
-    let keypair = solana_mpc
-        .generate_solana_keypair(user_id, 2) // 2 out of 3 threshold
+    let (keypair, pubkey_package_json) = solana_mpc
+        .generate_solana_keypair_with_metadata(user_id, 2) // 2 out of 3 threshold
         .await?;
 
     println!("Generated Solana keypair: {}", keypair.pubkey());
