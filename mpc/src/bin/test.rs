@@ -119,8 +119,8 @@ async fn test_solana_mpc_with_faucet() -> Result<(), Box<dyn std::error::Error>>
     println!("  Generating FROST keypair...");
     let user_id = "faucet_test_user_456";
     let threshold = 2; // Use 2-of-3 threshold
-    let keypair = solana_mpc
-        .generate_solana_keypair(user_id, threshold)
+    let (keypair, _pubkey_package_json) = solana_mpc
+        .generate_solana_keypair_with_metadata(user_id, threshold)
         .await?;
 
     println!("  FROST Public Key: {}", keypair.pubkey());
