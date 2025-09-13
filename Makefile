@@ -1,7 +1,7 @@
 # Makefile for Migration Management
 
 # Variables
-DATABASE_URL ?= postgresql://username:password@localhost:5432/purge_assignment
+DATABASE_URL ?= postgresql://saitamacoder:15122002@localhost:5432/purge_assignment
 
 # Colors for output
 GREEN = \033[0;32m

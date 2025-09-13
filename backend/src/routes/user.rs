@@ -62,16 +62,21 @@ pub async fn sign_up(
             info!("Creating MPC wallet for user: {}", user_id);
             let mut mpc_client_mut = SolanaMPCClient::new();
             
-            match mpc_client_mut.generate_solana_keypair(&user_id, 2).await {
-                Ok(keypair) => {
+            match mpc_client_mut.generate_solana_keypair_with_metadata(&user_id, 2).await {
+                Ok((keypair, pubkey_package_json)) => {
                     let mpc_wallet_pubkey = keypair.pubkey().to_string();
                     info!("MPC wallet created for user {}: {}", user_id, mpc_wallet_pubkey);
                     
-                    // Update user with MPC wallet pubkey
-                    if let Err(e) = store.update_user_mpc_wallet(&user_id, &mpc_wallet_pubkey).await {
-                        error!("Failed to update user MPC wallet: {}", e);
+                    // Update user with MPC wallet pubkey and metadata
+                    if let Err(e) = store.update_user_mpc_wallet_with_metadata(
+                        &user_id, 
+                        &mpc_wallet_pubkey,
+                        2, // threshold
+                        &pubkey_package_json
+                    ).await {
+                        error!("Failed to update user MPC wallet metadata: {}", e);
                         return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                            "error": "Failed to save MPC wallet"
+                            "error": "Failed to save MPC wallet metadata"
                         })));
                     }
                     
@@ -237,6 +242,94 @@ pub async fn get_user(req: HttpRequest, store: web::Data<Store>) -> Result<HttpR
             error!("User already exists for ID: {}", user_id);
             Ok(HttpResponse::Conflict().json(serde_json::json!({
                 "error": "User already exists"
+            })))
+        }
+    }
+}
+
+/// Regenerate MPC wallet for a user
+#[actix_web::post("/api/v1/user/regenerate-mpc-wallet")]
+pub async fn regenerate_mpc_wallet(
+    req: HttpRequest,
+    store: web::Data<Store>,
+) -> Result<HttpResponse> {
+    let user_id = match get_user_id_from_request(&req) {
+        Ok(id) => {
+            info!("Regenerate MPC wallet request from authenticated user: {}", id);
+            id
+        }
+        Err(response) => {
+            return Ok(response);
+        }
+    };
+
+    // Check if user exists
+    let user = match store.get_user_by_id(&user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found: {}", user_id);
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "User not found"
+            })));
+        }
+        Err(e) => {
+            error!("Database error getting user: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Internal server error"
+            })));
+        }
+    };
+
+    // Check if MPC servers are running
+    let mut healthy_servers = 0;
+    for port in [8081, 8082, 8083] {
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client.get(&format!("http://localhost:{}/health", port)).send().await {
+            if resp.status().is_success() {
+                healthy_servers += 1;
+            }
+        }
+    }
+
+    if healthy_servers < 2 {
+        error!("Not enough MPC servers running: {}/3", healthy_servers);
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "MPC service unavailable. Please try again later."
+        })));
+    }
+
+    // Generate new MPC wallet
+    info!("Regenerating MPC wallet for user: {}", user_id);
+    let mut mpc_client_mut = SolanaMPCClient::new();
+    
+    match mpc_client_mut.generate_solana_keypair_with_metadata(&user_id, 2).await {
+        Ok((keypair, pubkey_package_json)) => {
+            let mpc_wallet_pubkey = keypair.pubkey().to_string();
+            info!("New MPC wallet created for user {}: {}", user_id, mpc_wallet_pubkey);
+            
+            // Update user with new MPC wallet pubkey and metadata
+            if let Err(e) = store.update_user_mpc_wallet_with_metadata(
+                &user_id, 
+                &mpc_wallet_pubkey,
+                2, // threshold
+                &pubkey_package_json
+            ).await {
+                error!("Failed to update user MPC wallet metadata: {}", e);
+                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Failed to save new MPC wallet metadata"
+                })));
+            }
+            
+            Ok(HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "MPC wallet regenerated successfully",
+                "new_wallet_pubkey": mpc_wallet_pubkey
+            })))
+        }
+        Err(e) => {
+            error!("Failed to regenerate MPC wallet for user {}: {}", user_id, e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to regenerate MPC wallet: {}", e)
             })))
         }
     }

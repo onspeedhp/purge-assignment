@@ -60,6 +60,7 @@ async fn main() -> std::io::Result<()> {
             .service(sol_balance)
             .service(token_balance)
             .service(send_transaction)
+            .service(create_test_token)
             .service(mpc_health)
     })
     .bind("127.0.0.1:8080")?
