@@ -1,10 +1,35 @@
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{info, error, debug};
+use tracing::{info, error};
 use uuid::Uuid;
 use store::redis::{RedisStore, JupiterQuoteResponse};
 use crate::auth::get_user_id_from_request;
-use crate::solana_client::{SolanaRpcClient, TokenBalance};
+use frost_mpc::distributed_mpc::MPCServerClient;
+use frost_mpc::distributed_mpc::MPCServerConfig;
+use solana_sdk::pubkey::Pubkey;
+use hex;
+
+/// Helper function để get wallet address từ MPC
+async fn get_user_wallet_address(user_id: &str) -> Option<String> {
+    let mpc_client = MPCServerClient::new(MPCServerConfig {
+        id: 1,
+        host: "127.0.0.1".to_string(),
+        port: 8081,
+    });
+
+    let server_user_id = format!("{}_mpc_server_1", user_id);
+
+    match mpc_client.get_key_share_by_user_id(&server_user_id).await {
+        Ok(key_share) => {
+            let public_key_hex = key_share.public_key;
+            match Pubkey::try_from(hex::decode(&public_key_hex).unwrap().as_slice()) {
+                Ok(pubkey) => Some(pubkey.to_string()),
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    }
+}
 
 #[derive(Deserialize, Debug)]
 pub struct QuoteRequest {
@@ -62,7 +87,9 @@ pub struct SwapResponse {
 
 #[derive(Serialize)]
 pub struct BalanceResponse {
-    // Add fields when implementing
+    pub wallet_address: String,
+    pub sol_balance: u64,
+    pub sol_balance_sol: f64,
 }
 
 #[derive(Serialize)]
@@ -87,13 +114,9 @@ pub async fn quote(
     };
 
     // TODO: handle check balance user
-    /**
-     * 1. Call API from MPC to get user wallet
-     * 
-     * 2. Check current balance of user wallet with input token. 
-     * 
-     * 3. If current balance < inputAmount - return error
-     */
+    // 1. Call API from MPC to get user wallet
+    // 2. Check current balance of user wallet with input token. 
+    // 3. If current balance < inputAmount - return error
     
     let slippage_bps = 50;
     
@@ -201,7 +224,7 @@ pub async fn swap(
 #[actix_web::get("/api/v1/balance/sol")]
 pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let _user_id = match get_user_id_from_request(&http_req) {
+    let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("SOL balance request from authenticated user: {}", id);
             id
@@ -211,12 +234,69 @@ pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
         }
     };
     
-    // TODO: Implement SOL balance logic using user_id
-    let response = BalanceResponse {
-        // Add fields when implementing
+    // Get user's wallet address from MPC
+    let wallet_address = match get_user_wallet_address(&user_id).await {
+        Some(address) => {
+            info!("Found wallet address for user {}: {}", user_id, address);
+            address
+        }
+        None => {
+            error!("No wallet found for user {}", user_id);
+            return Ok(HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Wallet not found for user"
+            })));
+        }
     };
+
+    // Get SOL balance using Solana RPC
+    let rpc_url = "https://api.mainnet-beta.solana.com";
     
-    Ok(HttpResponse::Ok().json(response))
+    let request_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getBalance",
+        "params": [wallet_address]
+    });
+
+    let client = reqwest::Client::new();
+    let response_result = client
+        .post(rpc_url)
+        .json(&request_body)
+        .send()
+        .await;
+
+    match response_result {
+        Ok(rpc_response) => {
+            let result: serde_json::Value = rpc_response.json().await.map_err(|e| {
+                error!("Failed to parse RPC response: {}", e);
+                actix_web::error::ErrorInternalServerError("Failed to parse balance response")
+            })?;
+            
+            if let Some(balance_lamports) = result["result"]["value"].as_u64() {
+                let balance_sol = balance_lamports as f64 / 1_000_000_000.0;
+                
+                let response = BalanceResponse {
+                    wallet_address,
+                    sol_balance: balance_lamports,
+                    sol_balance_sol: balance_sol,
+                };
+                
+                info!("SOL balance for user {}: {} lamports ({} SOL)", user_id, balance_lamports, balance_sol);
+                Ok(HttpResponse::Ok().json(response))
+            } else {
+                error!("Invalid RPC response format for wallet {}", wallet_address);
+                Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Failed to parse SOL balance"
+                })))
+            }
+        }
+        Err(e) => {
+            error!("Failed to call Solana RPC for wallet {}: {}", wallet_address, e);
+            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to retrieve SOL balance"
+            })))
+        }
+    }
 }
 
 #[actix_web::get("/api/v1/balance/tokens")]
