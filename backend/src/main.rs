@@ -56,10 +56,7 @@ async fn main() -> std::io::Result<()> {
             .service(swap)
             .service(sol_balance)
             .service(token_balance)
-            // MPC Wallet endpoints
-            .service(create_wallet)
-            .service(get_wallet)
-            .service(wallet_health)
+            // All wallet functionality is now integrated into auth endpoints
     })
     .bind("127.0.0.1:8080")?
     .run()
