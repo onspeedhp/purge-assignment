@@ -6,13 +6,11 @@ use store::{Store, redis::{RedisStore, JupiterQuoteResponse}};
 use crate::auth::get_user_id_from_request;
 use frost_mpc::solana::SolanaMPCClient;
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::{pubkey::Pubkey, system_instruction, transaction::Transaction, signature::Signer};
+use solana_sdk::{pubkey::Pubkey, transaction::Transaction, signature::Signer};
 use spl_token::{instruction as token_instruction, state::Mint};
 use spl_associated_token_account::{instruction as ata_instruction, get_associated_token_address};
 use solana_program::program_pack::Pack;
 use std::str::FromStr;
-use solana_account_decoder::UiAccountData;
-use base64::{Engine as _, engine::general_purpose};
 
 #[derive(Deserialize, Debug)]
 pub struct QuoteRequest {
@@ -370,7 +368,6 @@ pub async fn sol_balance(http_req: HttpRequest, store: web::Data<Store>) -> Resu
 
 #[actix_web::get("/api/v1/balance/tokens")]
 pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Result<HttpResponse> {
-    // Get authenticated user ID
     let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Token balance request from authenticated user: {}", id);
@@ -381,7 +378,6 @@ pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Re
         }
     };
     
-    // Get user and MPC wallet
     let user = match store.get_user_by_id(&user_id).await {
         Ok(Some(user)) => user,
         Ok(None) => {
@@ -408,33 +404,43 @@ pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Re
         }
     };
 
-    let wallet_address = match Pubkey::from_str(&wallet_pubkey) {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
-            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Invalid wallet address"
-            })));
-        }
-    };
+    info!("Getting token accounts for wallet: {}", wallet_pubkey);
 
-    // Get token accounts for the wallet using RPC
+    // Get token accounts using jsonParsed encoding
     let token_accounts_result = tokio::task::spawn_blocking({
-        let wallet_address = wallet_address;
+        let wallet_pubkey = wallet_pubkey.clone();
         move || {
-            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-            rpc_client.get_token_accounts_by_owner(
-                &wallet_address,
-                solana_client::rpc_request::TokenAccountsFilter::ProgramId(spl_token::id()),
-            )
+            let client = reqwest::blocking::Client::new();
+            let request_body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTokenAccountsByOwner",
+                "params": [
+                    wallet_pubkey,
+                    {
+                        "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                    },
+                    {
+                        "encoding": "jsonParsed"
+                    }
+                ]
+            });
+
+            let response = client
+                .post("http://localhost:8899")
+                .json(&request_body)
+                .send()?;
+
+            let result: serde_json::Value = response.json()?;
+            info!("RPC response: {}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            Ok::<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>(result)
         }
     }).await;
 
-    let token_accounts = match token_accounts_result {
-        Ok(Ok(accounts)) => accounts,
+    let result = match token_accounts_result {
+        Ok(Ok(result)) => result,
         Ok(Err(e)) => {
             error!("Failed to get token accounts for {}: {}", wallet_pubkey, e);
-            // Return empty list instead of error for better UX
             let response: Vec<TokenBalance> = vec![];
             return Ok(HttpResponse::Ok().json(response));
         }
@@ -448,75 +454,39 @@ pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Re
 
     let mut token_balances = Vec::new();
 
-    for account in token_accounts {
-        // Parse token account data using Pack trait
-        let token_account_data = match &account.account.data {
-            UiAccountData::Binary(data, _) => {
-                match general_purpose::STANDARD.decode(data) {
-                    Ok(bytes) => match spl_token::state::Account::unpack(&bytes) {
-                        Ok(data) => data,
-                        Err(e) => {
-                            error!("Failed to parse token account data: {}", e);
-                            continue;
+    if let Some(accounts) = result["result"]["value"].as_array() {
+        info!("Found {} token accounts", accounts.len());
+        for account in accounts {
+            if let Some(parsed_data) = account["account"]["data"]["parsed"]["info"].as_object() {
+                if let (Some(mint), Some(token_amount)) = (
+                    parsed_data["mint"].as_str(),
+                    parsed_data["tokenAmount"].as_object()
+                ) {
+                    if let (Some(amount_str), Some(decimals)) = (
+                        token_amount["amount"].as_str(),
+                        token_amount["decimals"].as_u64()
+                    ) {
+                        if let Ok(amount) = amount_str.parse::<u64>() {
+                            info!("Found token: mint={}, amount={}, decimals={}", mint, amount, decimals);
+                            // Only include tokens with non-zero balance
+                            if amount > 0 {
+                                token_balances.push(TokenBalance {
+                                    balance: amount,
+                                    token_mint: mint.to_string(),
+                                    symbol: format!("TOKEN-{}", &mint[..8]), // Short name
+                                    decimals: decimals as u8,
+                                });
+                            }
                         }
-                    },
-                    Err(e) => {
-                        error!("Failed to decode base64 data: {}", e);
-                        continue;
                     }
                 }
-            },
-            _ => {
-                error!("Unexpected account data format");
-                continue;
             }
-        };
-
-        // Skip accounts with zero balance
-        if token_account_data.amount == 0 {
-            continue;
         }
-
-        // Get mint info to determine decimals
-        let mint_info_result = tokio::task::spawn_blocking({
-            let mint = token_account_data.mint;
-            move || {
-                let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-                rpc_client.get_account(&mint)
-            }
-        }).await;
-
-        let decimals = match mint_info_result {
-            Ok(rpc_result) => match rpc_result {
-                Ok(mint_account) => {
-                    match Mint::unpack(&mint_account.data) {
-                        Ok(mint_info) => mint_info.decimals,
-                        Err(_) => {
-                            error!("Failed to unpack mint data for {}", token_account_data.mint);
-                            6 // Default to 6 if can't parse
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("RPC error getting mint account for {}: {}", token_account_data.mint, e);
-                    6 // Default on RPC error
-                }
-            },
-            Err(e) => {
-                error!("Task join error: {}", e);
-                6 // Default on task error
-            }
-        };
-
-        token_balances.push(TokenBalance {
-            balance: token_account_data.amount,
-            token_mint: token_account_data.mint.to_string(),
-            symbol: format!("TOKEN-{}", &token_account_data.mint.to_string()[..8]), // Short name
-            decimals,
-        });
+    } else {
+        info!("No token accounts found or invalid response format");
     }
 
-    info!("Found {} token accounts with non-zero balances", token_balances.len());
+    info!("Returning {} token balances", token_balances.len());
     Ok(HttpResponse::Ok().json(token_balances))
 }
 
@@ -740,7 +710,7 @@ pub async fn send_transaction(
         instructions
     } else {
         // SOL transfer (existing logic)
-        vec![system_instruction::transfer(
+        vec![solana_sdk::system_instruction::transfer(
             &from_pubkey,
             &to_pubkey,
             req.amount,
@@ -834,27 +804,33 @@ pub async fn create_test_token(
     http_req: HttpRequest,
     store: web::Data<Store>,
 ) -> Result<HttpResponse> {
+    info!("=== CREATE TEST TOKEN START ===");
+    
     let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
-            info!("Create test token request from authenticated user: {}", id);
+            info!("✓ Authenticated user: {}", id);
             id
         }
         Err(response) => {
+            error!("✗ Authentication failed");
             return Ok(response);
         }
     };
 
     // Get user and MPC wallet metadata
     let user = match store.get_user_by_id(&user_id).await {
-        Ok(Some(user)) => user,
+        Ok(Some(user)) => {
+            info!("✓ Found user in database");
+            user
+        }
         Ok(None) => {
-            error!("User not found: {}", user_id);
+            error!("✗ User not found: {}", user_id);
             return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
                 "error": "User not found"
             })));
         }
         Err(e) => {
-            error!("Database error getting user: {}", e);
+            error!("✗ Database error: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Internal server error"
             })));
@@ -866,9 +842,12 @@ pub async fn create_test_token(
         user.mpc_threshold,
         user.mpc_pubkey_package,
     ) {
-        (Some(pubkey), Some(threshold), Some(package)) => (pubkey, threshold, package),
+        (Some(pubkey), Some(threshold), Some(package)) => {
+            info!("✓ MPC wallet data complete");
+            (pubkey, threshold, package)
+        }
         _ => {
-            error!("User {} has incomplete MPC wallet data", user_id);
+            error!("✗ Incomplete MPC wallet data");
             return Ok(HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "MPC wallet not properly initialized. Please contact support to regenerate your wallet."
             })));
@@ -876,29 +855,27 @@ pub async fn create_test_token(
     };
 
     let from_pubkey = match Pubkey::from_str(&wallet_pubkey) {
-        Ok(addr) => addr,
+        Ok(addr) => {
+            info!("✓ Parsed wallet address: {}", addr);
+            addr
+        }
         Err(e) => {
-            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
+            error!("✗ Invalid wallet address: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Invalid wallet address"
             })));
         }
     };
 
-    // Create a real test token mint and mint 1 million tokens to user
-    info!("Creating real test token for user {}", user_id);
-    
     // Generate new keypair for the mint
     let mint_keypair = solana_sdk::signature::Keypair::new();
     let mint_pubkey = mint_keypair.pubkey();
-    
-    // Get user's Associated Token Account
     let user_ata = get_associated_token_address(&from_pubkey, &mint_pubkey);
     
-    info!("Creating token mint: {}", mint_pubkey);
-    info!("User ATA will be: {}", user_ata);
+    info!("✓ Generated mint keypair: {}", mint_pubkey);
+    info!("✓ User ATA: {}", user_ata);
     
-    // Check if MPC servers are running
+    // Check MPC servers
     let mut healthy_servers = 0;
     for port in [8081, 8082, 8083] {
         let client = reqwest::Client::new();
@@ -910,13 +887,15 @@ pub async fn create_test_token(
     }
 
     if healthy_servers < 2 {
-        error!("Not enough MPC servers running: {}/3", healthy_servers);
+        error!("✗ Not enough MPC servers: {}/3", healthy_servers);
         return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "MPC service unavailable. Please try again later."
         })));
     }
+    info!("✓ MPC servers healthy: {}/3", healthy_servers);
 
-    // Get recent blockhash and mint rent in parallel
+    // Get blockchain data
+    info!("→ Getting blockchain data...");
     let (recent_blockhash_result, mint_rent_result) = tokio::join!(
         tokio::task::spawn_blocking({
             move || {
@@ -933,15 +912,18 @@ pub async fn create_test_token(
     );
     
     let recent_blockhash = match recent_blockhash_result {
-        Ok(Ok(hash)) => hash,
+        Ok(Ok(hash)) => {
+            info!("✓ Got recent blockhash: {}", hash);
+            hash
+        }
         Ok(Err(e)) => {
-            error!("RPC error getting blockhash: {}", e);
+            error!("✗ RPC error getting blockhash: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to connect to Solana network"
             })));
         }
         Err(e) => {
-            error!("Task join error: {}", e);
+            error!("✗ Task error: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Internal server error"
             })));
@@ -949,36 +931,44 @@ pub async fn create_test_token(
     };
 
     let mint_rent = match mint_rent_result {
-        Ok(Ok(rent)) => rent,
+        Ok(Ok(rent)) => {
+            info!("✓ Got mint rent: {} lamports", rent);
+            rent
+        }
         Ok(Err(e)) => {
-            error!("Failed to get mint rent: {}", e);
+            error!("✗ Failed to get mint rent: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to calculate rent"
             })));
         }
         Err(e) => {
-            error!("Task join error: {}", e);
+            error!("✗ Task error: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Internal server error"
             })));
         }
     };
     
-    // Create MPC client with existing wallet metadata
-    let solana_mpc = match SolanaMPCClient::with_existing_wallet(
+    // Create MPC client
+    info!("→ Creating MPC client...");
+    let mut solana_mpc = match SolanaMPCClient::with_existing_wallet(
         mpc_threshold as u16,
         &mpc_pubkey_package,
     ) {
-        Ok(client) => client,
+        Ok(client) => {
+            info!("✓ MPC client created");
+            client
+        }
         Err(e) => {
-            error!("Failed to create MPC client with existing wallet: {}", e);
+            error!("✗ Failed to create MPC client: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to initialize MPC client"
             })));
         }
     };
     
-    // Build instructions for token creation
+    // Build transaction instructions
+    info!("→ Building transaction instructions...");
     let mut instructions = Vec::new();
     
     // 1. Create mint account
@@ -990,8 +980,9 @@ pub async fn create_test_token(
         &spl_token::id(),
     );
     instructions.push(create_mint_account_ix);
+    info!("✓ Added create mint account instruction");
     
-    // 2. Initialize mint - FIX: Use correct function signature for SDK 2.0
+    // 2. Initialize mint
     let init_mint_ix = token_instruction::initialize_mint(
         &spl_token::id(),
         &mint_pubkey,
@@ -999,10 +990,11 @@ pub async fn create_test_token(
         Some(&from_pubkey), // freeze authority
         6, // decimals
     ).map_err(|e| {
-        error!("Failed to create initialize mint instruction: {}", e);
+        error!("✗ Failed to create initialize mint instruction: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to create mint instruction")
     })?;
     instructions.push(init_mint_ix);
+    info!("✓ Added initialize mint instruction");
     
     // 3. Create associated token account for user
     let create_ata_ix = ata_instruction::create_associated_token_account(
@@ -1012,8 +1004,9 @@ pub async fn create_test_token(
         &spl_token::id(),
     );
     instructions.push(create_ata_ix);
+    info!("✓ Added create ATA instruction");
     
-    // 4. Mint 1 million tokens to user (with 6 decimals = 1,000,000 * 10^6)
+    // 4. Mint 1 million tokens to user
     let mint_to_ix = token_instruction::mint_to(
         &spl_token::id(),
         &mint_pubkey,
@@ -1022,45 +1015,79 @@ pub async fn create_test_token(
         &[],
         1_000_000_000_000, // 1 million tokens with 6 decimals
     ).map_err(|e| {
-        error!("Failed to create mint_to instruction: {}", e);
+        error!("✗ Failed to create mint_to instruction: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to create mint instruction")
     })?;
     instructions.push(mint_to_ix);
+    info!("✓ Added mint_to instruction");
     
-    // Create transaction with all instructions
+    // Create transaction
     let mut transaction = Transaction::new_with_payer(&instructions, Some(&from_pubkey));
     transaction.message.recent_blockhash = recent_blockhash;
+    info!("✓ Transaction created with {} instructions", instructions.len());
     
-    // Sign transaction with FROST MPC
-    info!("Signing token creation transaction with FROST MPC...");
-    
+    // Sign with MPC
+    info!("→ Signing with FROST MPC...");
     let session_id = format!("create_token_{}", Uuid::new_v4());
-    let signing_result = match solana_mpc.sign_solana_transaction(&user_id, &transaction, &session_id).await {
-        Ok(result) => result,
+
+    // Create a copy of transaction for MPC signing
+    let mut mpc_transaction = transaction.clone();
+
+    let signing_result = match solana_mpc.sign_solana_transaction(&user_id, &mpc_transaction, &session_id).await {
+        Ok(result) => {
+            info!("✓ MPC signing successful");
+            result
+        }
         Err(e) => {
-            error!("MPC signing failed for user {}: {}", user_id, e);
+            error!("✗ MPC signing failed: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Transaction signing failed: {}", e)
             })));
         }
     };
-    
+
     if !signing_result.is_valid {
-        error!("FROST signature verification failed");
+        error!("✗ Signature verification failed");
         return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
             "error": "Transaction signing failed - signature verification failed"
         })));
     }
-    
-    // Get the signed transaction and add mint keypair signature
-    let mut final_transaction = signing_result.transaction;
-    
-    // Sign with mint keypair (for create account instruction)
+
+    // Create final transaction with both signatures
+    info!("→ Creating final transaction with both signatures...");
+
+    // Start with fresh transaction
+    let mut final_transaction = Transaction::new_with_payer(&instructions, Some(&from_pubkey));
+    final_transaction.message.recent_blockhash = recent_blockhash;
+
+    // Add mint keypair signature first (since it's needed for create account)
     final_transaction.partial_sign(&[&mint_keypair], recent_blockhash);
+    info!("✓ Added mint keypair signature");
+
+    // Then copy the MPC signature from the signed result
+    // The MPC signature should be for the payer (from_pubkey)
+    if let Some(mpc_signature) = signing_result.transaction.signatures.get(0) {
+        // Replace the payer signature with the MPC signature
+        if final_transaction.signatures.len() > 0 {
+            final_transaction.signatures[0] = *mpc_signature;
+            info!("✓ Added MPC signature for payer");
+        } else {
+            error!("✗ No signatures found in final transaction");
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to create final transaction signatures"
+            })));
+        }
+    } else {
+        error!("✗ No MPC signature found");
+        return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "MPC signature not found"
+        })));
+    }
+
+    info!("✓ Final transaction has {} signatures", final_transaction.signatures.len());
     
-    // Send transaction to network
-    info!("Sending token creation transaction to Solana network...");
-    
+    // Send transaction
+    info!("→ Sending transaction to network...");
     let send_result = tokio::task::spawn_blocking({
         let final_transaction = final_transaction.clone();
         move || {
@@ -1071,7 +1098,7 @@ pub async fn create_test_token(
     
     match send_result {
         Ok(Ok(signature)) => {
-            info!("✅ Token creation transaction sent successfully!");
+            info!("✅ TOKEN CREATION SUCCESS!");
             info!("Transaction signature: {}", signature);
             
             let response = serde_json::json!({
@@ -1093,13 +1120,13 @@ pub async fn create_test_token(
             Ok(HttpResponse::Ok().json(response))
         }
         Ok(Err(e)) => {
-            error!("❌ Token creation transaction failed: {}", e);
+            error!("✗ Transaction failed: {}", e);
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Failed to create token: {}", e)
             })))
         }
         Err(e) => {
-            error!("Task join error: {}", e);
+            error!("✗ Task error: {}", e);
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Internal server error"
             })))
