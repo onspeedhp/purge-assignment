@@ -4,6 +4,7 @@ use tracing::{info, error};
 use uuid::Uuid;
 use store::redis::{RedisStore, JupiterQuoteResponse};
 use crate::auth::get_user_id_from_request;
+use crate::solana_client::SolanaRpcClient;
 use frost_mpc::distributed_mpc::MPCServerClient;
 use frost_mpc::distributed_mpc::MPCServerConfig;
 use solana_sdk::pubkey::Pubkey;
@@ -248,50 +249,25 @@ pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
         }
     };
 
-    // Get SOL balance using Solana RPC
-    let rpc_url = "https://api.mainnet-beta.solana.com";
+    // Get SOL balance using existing SolanaRpcClient
+    let rpc_url = "https://api.mainnet-beta.solana.com".to_string();
+    let solana_client = SolanaRpcClient::new(rpc_url);
     
-    let request_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getBalance",
-        "params": [wallet_address]
-    });
-
-    let client = reqwest::Client::new();
-    let response_result = client
-        .post(rpc_url)
-        .json(&request_body)
-        .send()
-        .await;
-
-    match response_result {
-        Ok(rpc_response) => {
-            let result: serde_json::Value = rpc_response.json().await.map_err(|e| {
-                error!("Failed to parse RPC response: {}", e);
-                actix_web::error::ErrorInternalServerError("Failed to parse balance response")
-            })?;
+    match solana_client.get_sol_balance(&wallet_address).await {
+        Ok(balance_lamports) => {
+            let balance_sol = balance_lamports as f64 / 1_000_000_000.0;
             
-            if let Some(balance_lamports) = result["result"]["value"].as_u64() {
-                let balance_sol = balance_lamports as f64 / 1_000_000_000.0;
-                
-                let response = BalanceResponse {
-                    wallet_address,
-                    sol_balance: balance_lamports,
-                    sol_balance_sol: balance_sol,
-                };
-                
-                info!("SOL balance for user {}: {} lamports ({} SOL)", user_id, balance_lamports, balance_sol);
-                Ok(HttpResponse::Ok().json(response))
-            } else {
-                error!("Invalid RPC response format for wallet {}", wallet_address);
-                Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": "Failed to parse SOL balance"
-                })))
-            }
+            let response = BalanceResponse {
+                wallet_address,
+                sol_balance: balance_lamports,
+                sol_balance_sol: balance_sol,
+            };
+            
+            info!("SOL balance for user {}: {} lamports ({} SOL)", user_id, balance_lamports, balance_sol);
+            Ok(HttpResponse::Ok().json(response))
         }
         Err(e) => {
-            error!("Failed to call Solana RPC for wallet {}: {}", wallet_address, e);
+            error!("Failed to get SOL balance for wallet {}: {}", wallet_address, e);
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to retrieve SOL balance"
             })))

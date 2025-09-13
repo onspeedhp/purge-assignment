@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
-// use tracing::{info, error, debug};
-// use std::collections::HashMap;
+use tracing::{info, error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBalance {
@@ -10,14 +9,12 @@ pub struct TokenBalance {
     pub decimals: i32,
 }
 
-/*
 #[derive(Debug, Clone)]
 pub struct SolanaRpcClient {
     pub rpc_url: String,
     pub client: reqwest::Client,
-}*/
+}
 
-/*
 impl SolanaRpcClient {
     pub fn new(rpc_url: String) -> Self {
         Self {
@@ -126,7 +123,6 @@ impl SolanaRpcClient {
         Ok((sol_balance, token_balances))
     }
 }
-*/
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenAccount {
