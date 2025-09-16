@@ -7,6 +7,7 @@ use store::{Store, user::CreateUserRequest};
 use tracing::{error, info, warn};
 use crate::auth::get_user_id_from_request;
 use frost_mpc::distributed_mpc::{DistributedMPC, MPCServerClient, MPCServerConfig};
+use reqwest::Client;
 
 /// Helper function to get wallet info from MPC
 async fn get_wallet_info(user_id: &str) -> Option<(String, String)> {
@@ -29,6 +30,39 @@ async fn get_wallet_info(user_id: &str) -> Option<(String, String)> {
             None
         }
         Err(_) => None,
+    }
+}
+
+/// Helper function to subscribe wallet to indexer
+async fn subscribe_wallet_to_indexer(user_id: &str, wallet_address: &str) -> Result<(), String> {
+    let indexer_url = env::var("INDEXER_URL").unwrap_or_else(|_| "http://127.0.0.1:8090".to_string());
+    let client = Client::new();
+    
+    let subscribe_request = serde_json::json!({
+        "wallet_address": wallet_address
+    });
+    
+    match client
+        .post(&format!("{}/api/v1/subscribe", indexer_url))
+        .json(&subscribe_request)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                info!("✅ Successfully subscribed wallet {} to indexer for user {}", wallet_address, user_id);
+                Ok(())
+            } else {
+                let error_msg = format!("Indexer subscription failed with status: {}", response.status());
+                error!("{}", error_msg);
+                Err(error_msg)
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to call indexer API: {}", e);
+            error!("{}", error_msg);
+            Err(error_msg)
+        }
     }
 }
 
@@ -114,6 +148,17 @@ pub async fn sign_up(
                     info!("✅ MPC wallet created for user {}", user.id);
                     info!("   Wallet Address: {}", wallet_address);
                     info!("   Public Key: {}", public_key_hex);
+
+                    // Subscribe wallet to indexer for real-time monitoring
+                    match subscribe_wallet_to_indexer(&user.id, &wallet_address).await {
+                        Ok(_) => {
+                            info!("✅ Wallet {} subscribed to indexer for user {}", wallet_address, user.id);
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Failed to subscribe wallet to indexer for user {}: {}", user.id, e);
+                            // Don't fail the signup, just log the warning
+                        }
+                    }
 
                     let response = SignupResponse {
                         message: "User created successfully with MPC wallet".to_string(),
