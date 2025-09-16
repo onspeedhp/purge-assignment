@@ -1,10 +1,17 @@
-use actix_web::{App, HttpServer, web};
+use actix_web::{App, HttpResponse, HttpServer, web};
 use std::{env, sync::Arc};
 use store::Store;
 use tracing::{error, info};
-use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 
+mod database;
+mod handlers;
+mod models;
+mod subscription;
 mod yellowstone_client;
+
+use database::AssetDatabase;
+use handlers::IndexerHandlers;
+use subscription::SubscriptionService;
 use yellowstone_client::*;
 
 #[tokio::main]
@@ -31,7 +38,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to connect to database");
 
     info!("Database connected successfully!");
-    let store = Store::new(pool);
+    let store = Store::new(pool.clone());
 
     let client = setup_client(geyser_grpc_endpoint)
         .await
@@ -40,14 +47,56 @@ async fn main() -> std::io::Result<()> {
 
     let client = Arc::new(client);
 
+    let asset_database = Arc::new(AssetDatabase::new(pool));
+    let subscription_service = Arc::new(SubscriptionService::new(
+        client.clone(),
+        asset_database.clone(),
+    ));
+    let handlers = Arc::new(IndexerHandlers::new(
+        asset_database.clone(),
+        subscription_service.clone(),
+    ));
+
+    let subscriptions = asset_database
+        .get_active_subscriptions()
+        .await
+        .expect("Failed to get active subscriptions");
+
+    for subscription in subscriptions {
+        if let Err(e) = subscription_service.start_subscription(subscription).await {
+            error!("Failed to start subscription: {:?}", e);
+        }
+    }
+
     info!("Starting server on http://127.0.0.1:8090");
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(store.clone()))
             .app_data(web::Data::new(client.clone()))
+            .app_data(web::Data::new(handlers.clone()))
+            .service(
+                web::scope("/api/v1")
+                    .route("/subscribe", web::post().to(handle_subscribe))
+                    .route("/unsubscribe", web::post().to(handle_unsubscribe)),
+            )
             .wrap(tracing_actix_web::TracingLogger::default())
     })
     .bind("127.0.0.1:8090")?
     .run()
     .await
+}
+
+// Handler functions
+async fn handle_subscribe(
+    handlers: web::Data<Arc<IndexerHandlers>>,
+    req: web::Json<crate::models::SubscribeRequest>,
+) -> actix_web::Result<HttpResponse> {
+    handlers.subscribe_to_account(req).await
+}
+
+async fn handle_unsubscribe(
+    handlers: web::Data<Arc<IndexerHandlers>>,
+    req: web::Json<crate::models::UnsubscribeRequest>,
+) -> actix_web::Result<HttpResponse> {
+    handlers.unsubscribe_from_account(req).await
 }
