@@ -1,5 +1,6 @@
 use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
+use store::Store;
 use tracing::{info, error};
 use uuid::Uuid;
 use store::redis::{RedisStore, JupiterQuoteResponse};
@@ -95,7 +96,10 @@ pub struct BalanceResponse {
 
 #[derive(Serialize)]
 pub struct TokenBalanceResponse {
-    // Add fields when implementing
+    pub token_mint: String,
+    pub symbol: String,
+    pub decimals: i32,
+    pub balance: u64,
 }
 
 #[actix_web::post("/api/v1/quote")]
@@ -276,9 +280,9 @@ pub async fn sol_balance(http_req: HttpRequest) -> Result<HttpResponse> {
 }
 
 #[actix_web::get("/api/v1/balance/tokens")]
-pub async fn token_balance(http_req: HttpRequest) -> Result<HttpResponse> {
+pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Result<HttpResponse> {
     // Get authenticated user ID
-    let _user_id = match get_user_id_from_request(&http_req) {
+    let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Token balance request from authenticated user: {}", id);
             id
@@ -287,11 +291,50 @@ pub async fn token_balance(http_req: HttpRequest) -> Result<HttpResponse> {
             return Ok(response);
         }
     };
-    
-    // TODO: Implement token balance logic using user_id
-    let response = TokenBalanceResponse {
-        // Add fields when implementing
+
+    let wallet_address = match get_user_wallet_address(&user_id).await {
+        Some(address) => {
+            info!("Found wallet address for user {}: {}", user_id, address);
+            address
+        }
+        None => {
+            error!("No wallet found for user {}", user_id);
+            return Ok(HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Wallet not found for user"
+            })));
+        }
     };
+    let assets = match store.get_all_assets_not_native().await {
+        Ok(assets) => assets,
+        Err(e) => {
+            error!("Failed to get all assets: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get all assets"
+            })));
+        }
+    };
+
+    let rpc_url = "https://api.mainnet-beta.solana.com".to_string();
+    let solana_client = SolanaRpcClient::new(rpc_url);
+    let mut response_token_balances = Vec::<TokenBalanceResponse>::new();
+    for asset in assets {
+        let balance = match solana_client.get_token_account_balance(&wallet_address, &asset.mint_address).await {
+            Ok(balance) => balance,
+            Err(e) => {
+                error!("Failed to get token account balance for wallet {}: {}", wallet_address, e);
+                continue;
+            }
+        };
+        
+        if balance > 0 {
+            response_token_balances.push(TokenBalanceResponse {
+                token_mint: asset.mint_address,
+                symbol: asset.symbol,
+                decimals: asset.decimals,
+                balance,
+            });
+        }
+    }
     
-    Ok(HttpResponse::Ok().json(response))
+    Ok(HttpResponse::Ok().json(response_token_balances))
 }
