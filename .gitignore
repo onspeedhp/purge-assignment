@@ -9,3 +9,5 @@ mpc/logs/*
 **/.env
 
 test-ledger
+
+**.log

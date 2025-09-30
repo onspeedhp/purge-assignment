@@ -1,43 +1,44 @@
-# Makefile for Migration Management
+# Solana MPC Wallet Makefile
 
-# Variables
-DATABASE_URL ?= postgresql://saitamacoder:15122002@localhost:5432/purge_assignment
+.PHONY: help start-all stop-all status test-auth
 
-# Colors for output
-GREEN = \033[0;32m
-YELLOW = \033[1;33m
-RED = \033[0;31m
-NC = \033[0m # No Color
+help: ## Show commands
+	@echo "Commands:"
+	@echo "  start-all  - Start all services"
+	@echo "  stop-all   - Stop all services" 
+	@echo "  status     - Check status"
+	@echo "  test-auth  - Test authentication"
 
-.PHONY: help migrate migrate-up migrate-down migrate-status migrate-new
+start-all: ## Start all services
+	@echo "🚀 Starting all services..."
+	@docker run --name postgres-purge -e POSTGRES_PASSWORD=password -e POSTGRES_DB=purge_assignment -p 5432:5432 -d postgres:14 2>/dev/null || echo "PostgreSQL already running"
+	@brew services start redis 2>/dev/null || echo "Redis already running"
+	@sleep 3
+	@cd backend && sqlx migrate run
+	@mkdir -p logs
+	@cd mpc && cargo run --bin frost-mpc -- --port 8081 > ../logs/mpc1.log 2>&1 &
+	@cd mpc && cargo run --bin frost-mpc -- --port 8082 > ../logs/mpc2.log 2>&1 &
+	@cd mpc && cargo run --bin frost-mpc -- --port 8083 > ../logs/mpc3.log 2>&1 &
+	@sleep 3
+	@cd backend && cargo run > ../logs/backend.log 2>&1 &
+	@cd indexer && cargo run > ../logs/indexer.log 2>&1 &
+	@sleep 3
+	@echo "✅ All services started!"
 
-# Default target
-help: ## Show this help message
-	@echo "$(GREEN)Available migration commands:$(NC)"
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  $(YELLOW)%-20s$(NC) %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+stop-all: ## Stop all services
+	@echo "🛑 Stopping all services..."
+	@docker stop postgres-purge 2>/dev/null || true
+	@pkill -f "cargo run" 2>/dev/null || true
+	@echo "✅ All services stopped!"
 
-# Migration commands
-migrate: migrate-up ## Run all pending migrations (alias for migrate-up)
+status: ## Check status
+	@echo "📊 Service Status:"
+	@echo "PostgreSQL: $$(docker ps | grep postgres-purge | wc -l | tr -d ' ') running"
+	@echo "Backend: $$(curl -s http://localhost:8080/health > /dev/null && echo "running" || echo "not running")"
+	@echo "MPC 1: $$(curl -s http://localhost:8081/health > /dev/null && echo "running" || echo "not running")"
 
-migrate-up: ## Run all pending migrations
-	@echo "$(GREEN)Running migrations...$(NC)"
-	@cd backend && DATABASE_URL="$(DATABASE_URL)" sqlx migrate run
-	@echo "$(GREEN)Migrations completed!$(NC)"
-
-migrate-down: ## Rollback the last migration
-	@echo "$(YELLOW)Rolling back last migration...$(NC)"
-	@cd backend && DATABASE_URL="$(DATABASE_URL)" sqlx migrate revert
-	@echo "$(GREEN)Migration rolled back!$(NC)"
-
-migrate-status: ## Show migration status
-	@echo "$(GREEN)Migration status:$(NC)"
-	@cd backend && DATABASE_URL="$(DATABASE_URL)" sqlx migrate info
-
-migrate-new: ## Create a new migration (usage: make migrate-new NAME=migration_name)
-	@if [ -z "$(NAME)" ]; then \
-		echo "$(RED)Error: Please provide a migration name$(NC)"; \
-		echo "Usage: make migrate-new NAME=add_user_table"; \
-		exit 1; \
-	fi
-	@echo "$(GREEN)Creating new migration: $(NAME)$(NC)"
-	@cd backend && sqlx migrate add $(NAME)
+test-auth: ## Test authentication
+	@echo "🧪 Testing authentication..."
+	@curl -X POST http://localhost:8080/api/v1/signup \
+		-H "Content-Type: application/json" \
+		-d '{"username": "test@example.com", "password": "password123"}' || echo "Backend not running"
