@@ -7,6 +7,40 @@ use store::{Store, user::CreateUserRequest};
 use tracing::{error, info, warn};
 use crate::auth::get_user_id_from_request;
 use frost_mpc::solana::SolanaMPCClient;
+use reqwest::Client;
+
+/// Helper function to subscribe wallet to indexer
+async fn subscribe_wallet_to_indexer(user_id: &str, wallet_address: &str) -> Result<(), String> {
+    let indexer_url = env::var("INDEXER_URL").unwrap_or_else(|_| "http://127.0.0.1:8090".to_string());
+    let client = Client::new();
+    
+    let subscribe_request = serde_json::json!({
+        "wallet_address": wallet_address
+    });
+    
+    match client
+        .post(&format!("{}/api/v1/subscribe", indexer_url))
+        .json(&subscribe_request)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                info!("✅ Successfully subscribed wallet {} to indexer for user {}", wallet_address, user_id);
+                Ok(())
+            } else {
+                let error_msg = format!("Indexer subscription failed with status: {}", response.status());
+                error!("{}", error_msg);
+                Err(error_msg)
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to call indexer API: {}", e);
+            error!("{}", error_msg);
+            Err(error_msg)
+        }
+    }
+}
 
 #[derive(Deserialize, Debug)]
 pub struct SignUpRequest {
@@ -94,6 +128,17 @@ pub async fn sign_up(
                         error!("Failed to generate JWT token: {}", e);
                         actix_web::error::ErrorInternalServerError(e)
                     })?;
+
+                    // Subscribe wallet to indexer for real-time monitoring
+                    match subscribe_wallet_to_indexer(&user_id, &mpc_wallet_pubkey).await {
+                        Ok(_) => {
+                            info!("✅ Wallet {} subscribed to indexer for user {}", mpc_wallet_pubkey, user_id);
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Failed to subscribe wallet to indexer for user {}: {}", user_id, e);
+                            // Don't fail the signup, just log the warning
+                        }
+                    }
 
                     let response = SignupResponse {
                         message: "signed up successfully".to_string(),

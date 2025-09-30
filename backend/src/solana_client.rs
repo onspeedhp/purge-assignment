@@ -1,5 +1,10 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
-use tracing::{info, error};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
+use spl_associated_token_account::get_associated_token_address;
+use tracing::{error, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBalance {
@@ -9,17 +14,45 @@ pub struct TokenBalance {
     pub decimals: i32,
 }
 
-#[derive(Debug, Clone)]
 pub struct SolanaRpcClient {
     pub rpc_url: String,
     pub client: reqwest::Client,
+    pub rpc_client: RpcClient,
 }
 
 impl SolanaRpcClient {
     pub fn new(rpc_url: String) -> Self {
         Self {
+            rpc_client: RpcClient::new(rpc_url.clone()),
             rpc_url,
             client: reqwest::Client::new(),
+        }
+    }
+
+    pub async fn get_token_account_balance(
+        &self,
+        wallet_address: &str,
+        token_mint: &str,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let wallet_pubkey = Pubkey::from_str(wallet_address)
+            .map_err(|e| format!("Invalid wallet address: {}", e))?;
+        let mint_pubkey = Pubkey::from_str(token_mint)
+            .map_err(|e| format!("Invalid token mint: {}", e))?;
+            
+        let ata_mint = get_associated_token_address(&wallet_pubkey, &mint_pubkey);
+
+        match self.rpc_client.get_token_account_balance(&ata_mint).await {
+            Ok(balance) => {
+                Ok(balance.amount.parse::<u64>().unwrap_or(0))
+            }
+            Err(e) => {
+                // If account doesn't exist, return 0 balance instead of error
+                if e.to_string().contains("could not find account") {
+                    Ok(0)
+                } else {
+                    Err(e.into())
+                }
+            }
         }
     }
 

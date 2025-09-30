@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+actix-web = "4.11.0"
+tracing-actix-web = "0.7"
 tokio = { version = "1.0", features = ["full"] }
 tonic = "0.14.2"
 tonic-health = "0.14.2"
 bytes = "1.10.1"
 futures = "0.3.31"
-yellowstone-grpc-proto = "9.0.0"
+yellowstone-grpc-client = "6.0.0"
+yellowstone-grpc-proto = "6.0.0"
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -18,3 +21,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dotenv = "0.15"
 store = { path = "../store" }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+bs58 = "0.5"
+reqwest = { version = "0.11", features = ["json"] }

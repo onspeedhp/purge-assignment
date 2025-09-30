@@ -2,7 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, error};
 use uuid::Uuid;
-use store::{Store, redis::{RedisStore, JupiterQuoteResponse}};
+use store::{Store, redis::{RedisStore, JupiterQuoteResponse}, asset::Asset};
 use crate::auth::get_user_id_from_request;
 use frost_mpc::solana::SolanaMPCClient;
 use solana_client::rpc_client::RpcClient;
@@ -11,6 +11,7 @@ use spl_token::{instruction as token_instruction, state::Mint};
 use spl_associated_token_account::{instruction as ata_instruction, get_associated_token_address};
 use solana_program::program_pack::Pack;
 use std::str::FromStr;
+use crate::solana_client::SolanaRpcClient;
 
 #[derive(Deserialize, Debug)]
 pub struct QuoteRequest {
@@ -88,6 +89,22 @@ pub struct TokenBalance {
     pub decimals: u8,
 }
 
+
+#[derive(Serialize)]
+pub struct TokenBalanceResponse {
+    pub balance: u64,
+    #[serde(rename = "tokenMint")]
+    pub token_mint: String,
+    pub symbol: String,
+    pub decimals: i32,
+}
+
+#[derive(Deserialize)]
+pub struct TokenBalanceRequest {
+    #[serde(rename = "tokenMint")]
+    pub token_mint: String,
+}
+
 #[derive(Serialize)]
 pub struct SendResponse {
     pub success: bool,
@@ -140,44 +157,26 @@ pub async fn quote(
     };
 
     // Check balance logic here
-    let wallet_address = match Pubkey::from_str(&wallet_pubkey) {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
-            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Invalid wallet address"
-            })));
-        }
-    };
+
 
     // For SOL native token
     if req.input_mint == "So11111111111111111111111111111111111111112" {
-        let balance_result = tokio::task::spawn_blocking({
-            let wallet_address = wallet_address;
-            move || {
-                let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-                rpc_client.get_balance(&wallet_address)
-            }
-        }).await;
+        let rpc_url = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+        let solana_client = SolanaRpcClient::new(rpc_url);
 
-        match balance_result {
-            Ok(Ok(balance)) => {
+        match solana_client.get_sol_balance(&wallet_pubkey).await {
+            Ok(balance) => {
                 if balance < req.in_amount {
                     return Ok(HttpResponse::BadRequest().json(serde_json::json!({
                         "error": "Insufficient balance"
                     })));
                 }
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 error!("Failed to get SOL balance: {}", e);
                 return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                     "error": "Failed to check balance"
-                })));
-            }
-            Err(e) => {
-                error!("Task join error: {}", e);
-                return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": "Internal server error"
                 })));
             }
         }
@@ -328,46 +327,32 @@ pub async fn sol_balance(http_req: HttpRequest, store: web::Data<Store>) -> Resu
         }
     };
 
-    let wallet_address = match Pubkey::from_str(&wallet_pubkey) {
-        Ok(addr) => addr,
-        Err(e) => {
-            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
-            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Invalid wallet address"
-            })));
-        }
-    };
 
-    let balance_result = tokio::task::spawn_blocking({
-        let wallet_address = wallet_address;
-        move || {
-            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-            rpc_client.get_balance(&wallet_address)
-        }
-    }).await;
 
-    match balance_result {
-        Ok(Ok(balance)) => {
+    let rpc_url = std::env::var("SOLANA_RPC_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let solana_client = SolanaRpcClient::new(rpc_url);
+
+    match solana_client.get_sol_balance(&wallet_pubkey).await {
+        Ok(balance) => {
             let response = BalanceResponse { balance };
             Ok(HttpResponse::Ok().json(response))
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             error!("Failed to get SOL balance for {}: {}", wallet_pubkey, e);
             Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to get balance"
             })))
         }
-        Err(e) => {
-            error!("Task join error: {}", e);
-            Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Internal server error"
-            })))
-        }
     }
 }
 
-#[actix_web::get("/api/v1/balance/tokens")]
-pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Result<HttpResponse> {
+#[actix_web::post("/api/v1/balance/tokens")]
+pub async fn token_balance(
+    req: web::Json<TokenBalanceRequest>,
+    http_req: HttpRequest, 
+    store: web::Data<Store>
+) -> Result<HttpResponse> {
     let user_id = match get_user_id_from_request(&http_req) {
         Ok(id) => {
             info!("Token balance request from authenticated user: {}", id);
@@ -404,90 +389,69 @@ pub async fn token_balance(http_req: HttpRequest, store: web::Data<Store>) -> Re
         }
     };
 
-    info!("Getting token accounts for wallet: {}", wallet_pubkey);
+    info!("Getting token balance for wallet: {} and mint: {}", wallet_pubkey, req.token_mint);
 
-    // Get token accounts using jsonParsed encoding
-    let token_accounts_result = tokio::task::spawn_blocking({
-        let wallet_pubkey = wallet_pubkey.clone();
-        move || {
-            let client = reqwest::blocking::Client::new();
-            let request_body = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getTokenAccountsByOwner",
-                "params": [
-                    wallet_pubkey,
-                    {
-                        "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-                    },
-                    {
-                        "encoding": "jsonParsed"
-                    }
-                ]
-            });
-
-            let response = client
-                .post("http://localhost:8899")
-                .json(&request_body)
-                .send()?;
-
-            let result: serde_json::Value = response.json()?;
-            info!("RPC response: {}", serde_json::to_string_pretty(&result).unwrap_or_default());
-            Ok::<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>(result)
+    let _wallet_address = match Pubkey::from_str(&wallet_pubkey) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("Invalid wallet pubkey {}: {}", wallet_pubkey, e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Invalid wallet address"
+            })));
         }
-    }).await;
-
-    let result = match token_accounts_result {
-        Ok(Ok(result)) => result,
-        Ok(Err(e)) => {
-            error!("Failed to get token accounts for {}: {}", wallet_pubkey, e);
-            let response: Vec<TokenBalance> = vec![];
-            return Ok(HttpResponse::Ok().json(response));
+    };
+    
+    // Get asset info from database, or create default if not found
+    let asset = match store.get_asset_by_mint(&req.token_mint).await {
+        Ok(Some(asset)) => {
+            info!("Found asset in database: {} ({})", asset.symbol, req.token_mint);
+            asset
+        }
+        Ok(None) => {
+            info!("Asset not found in database for mint: {}, using default info", req.token_mint);
+            // Create default asset info for unknown tokens
+            Asset {
+                id: uuid::Uuid::new_v4().to_string(),
+                mint_address: req.token_mint.clone(),
+                symbol: "UNKNOWN".to_string(),
+                name: "Unknown Token".to_string(),
+                decimals: 9, // Default to 9 decimals for unknown tokens
+                logo_url: None,
+                is_native: false,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }
         }
         Err(e) => {
-            error!("Task join error: {}", e);
+            error!("Failed to get asset: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Internal server error"
+                "error": "Failed to get token information"
             })));
         }
     };
 
-    let mut token_balances = Vec::new();
-
-    if let Some(accounts) = result["result"]["value"].as_array() {
-        info!("Found {} token accounts", accounts.len());
-        for account in accounts {
-            if let Some(parsed_data) = account["account"]["data"]["parsed"]["info"].as_object() {
-                if let (Some(mint), Some(token_amount)) = (
-                    parsed_data["mint"].as_str(),
-                    parsed_data["tokenAmount"].as_object()
-                ) {
-                    if let (Some(amount_str), Some(decimals)) = (
-                        token_amount["amount"].as_str(),
-                        token_amount["decimals"].as_u64()
-                    ) {
-                        if let Ok(amount) = amount_str.parse::<u64>() {
-                            info!("Found token: mint={}, amount={}, decimals={}", mint, amount, decimals);
-                            // Only include tokens with non-zero balance
-                            if amount > 0 {
-                                token_balances.push(TokenBalance {
-                                    balance: amount,
-                                    token_mint: mint.to_string(),
-                                    symbol: format!("TOKEN-{}", &mint[..8]), // Short name
-                                    decimals: decimals as u8,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+    let rpc_url = std::env::var("SOLANA_RPC_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let solana_client = SolanaRpcClient::new(rpc_url);
+    
+    let balance = match solana_client.get_token_account_balance(&wallet_pubkey, &req.token_mint).await {
+        Ok(balance) => balance,
+        Err(e) => {
+            error!("Failed to get token account balance for wallet {} and mint {}: {}", wallet_pubkey, req.token_mint, e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get token balance"
+            })));
         }
-    } else {
-        info!("No token accounts found or invalid response format");
-    }
-
-    info!("Returning {} token balances", token_balances.len());
-    Ok(HttpResponse::Ok().json(token_balances))
+    };
+    
+    let response = TokenBalanceResponse {
+        balance,
+        token_mint: req.token_mint.clone(),
+        symbol: asset.symbol,
+        decimals: asset.decimals,
+    };
+    
+    Ok(HttpResponse::Ok().json(response))
 }
 
 #[actix_web::post("/api/v1/send")]
@@ -602,21 +566,37 @@ pub async fn send_transaction(
         None
     };
 
-    // Check balance and get recent blockhash using spawn_blocking
-    let balance_and_hash_result = tokio::task::spawn_blocking({
-        let from_pubkey = from_pubkey;
-        move || {
-            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
-            let balance = rpc_client.get_balance(&from_pubkey)?;
-            let blockhash = rpc_client.get_latest_blockhash()?;
-            Ok::<(u64, solana_sdk::hash::Hash), Box<dyn std::error::Error + Send + Sync>>((balance, blockhash))
-        }
-    }).await;
+    // Get RPC URL and create Solana client
+    let rpc_url = std::env::var("SOLANA_RPC_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let solana_client = SolanaRpcClient::new(rpc_url.clone());
 
-    let (balance, recent_blockhash) = match balance_and_hash_result {
-        Ok(Ok((bal, hash))) => (bal, hash),
+    // Get balance and recent blockhash
+    let (balance_result, blockhash_result) = tokio::join!(
+        solana_client.get_sol_balance(&wallet_pubkey),
+        tokio::task::spawn_blocking({
+            let rpc_url_for_blockhash = rpc_url.clone();
+            move || {
+                let rpc_client = RpcClient::new(rpc_url_for_blockhash);
+                rpc_client.get_latest_blockhash()
+            }
+        })
+    );
+
+    let balance = match balance_result {
+        Ok(bal) => bal,
+        Err(e) => {
+            error!("Failed to get SOL balance: {}", e);
+            return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get balance"
+            })));
+        }
+    };
+
+    let recent_blockhash = match blockhash_result {
+        Ok(Ok(hash)) => hash,
         Ok(Err(e)) => {
-            error!("RPC error: {}", e);
+            error!("RPC error getting blockhash: {}", e);
             return Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to connect to Solana network. Please ensure local validator is running."
             })));
@@ -659,8 +639,10 @@ pub async fn send_transaction(
         // Note: We check if the account exists first to avoid unnecessary instruction
         let ata_exists = tokio::task::spawn_blocking({
             let to_ata = to_ata;
+            let rpc_url = std::env::var("SOLANA_RPC_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
             move || {
-                let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+                let rpc_client = RpcClient::new(rpc_url);
                 rpc_client.get_account(&to_ata).is_ok()
             }
         }).await;
@@ -766,8 +748,10 @@ pub async fn send_transaction(
     
     let send_result = tokio::task::spawn_blocking({
         let signed_transaction = signing_result.transaction.clone();
+        let rpc_url = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
         move || {
-            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+            let rpc_client = RpcClient::new(rpc_url);
             rpc_client.send_and_confirm_transaction(&signed_transaction)
         }
     }).await;
@@ -896,16 +880,20 @@ pub async fn create_test_token(
 
     // Get blockchain data
     info!("→ Getting blockchain data...");
+    let rpc_url = std::env::var("SOLANA_RPC_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
     let (recent_blockhash_result, mint_rent_result) = tokio::join!(
         tokio::task::spawn_blocking({
+            let rpc_url = rpc_url.clone();
             move || {
-                let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+                let rpc_client = RpcClient::new(rpc_url);
                 rpc_client.get_latest_blockhash()
             }
         }),
         tokio::task::spawn_blocking({
+            let rpc_url = rpc_url.clone();
             move || {
-                let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+                let rpc_client = RpcClient::new(rpc_url);
                 rpc_client.get_minimum_balance_for_rent_exemption(Mint::LEN)
             }
         })
@@ -951,7 +939,7 @@ pub async fn create_test_token(
     
     // Create MPC client
     info!("→ Creating MPC client...");
-    let mut solana_mpc = match SolanaMPCClient::with_existing_wallet(
+    let solana_mpc = match SolanaMPCClient::with_existing_wallet(
         mpc_threshold as u16,
         &mpc_pubkey_package,
     ) {
@@ -1031,7 +1019,7 @@ pub async fn create_test_token(
     let session_id = format!("create_token_{}", Uuid::new_v4());
 
     // Create a copy of transaction for MPC signing
-    let mut mpc_transaction = transaction.clone();
+    let mpc_transaction = transaction.clone();
 
     let signing_result = match solana_mpc.sign_solana_transaction(&user_id, &mpc_transaction, &session_id).await {
         Ok(result) => {
@@ -1090,8 +1078,10 @@ pub async fn create_test_token(
     info!("→ Sending transaction to network...");
     let send_result = tokio::task::spawn_blocking({
         let final_transaction = final_transaction.clone();
+        let rpc_url = std::env::var("SOLANA_RPC_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
         move || {
-            let rpc_client = RpcClient::new("http://localhost:8899".to_string());
+            let rpc_client = RpcClient::new(rpc_url);
             rpc_client.send_and_confirm_transaction(&final_transaction)
         }
     }).await;

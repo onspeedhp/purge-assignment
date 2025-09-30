@@ -1,5 +1,6 @@
 pub mod user;
 pub mod redis;
+pub mod asset;
 
 use sqlx::PgPool;
 

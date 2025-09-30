@@ -1,9 +1,9 @@
 {
 	"info": {
-		"_postman_id": "3d3656bc-d6bc-4b85-b4ad-f13d6280df0b",
+		"_postman_id": "b6bd0362-0a4c-4ecb-8626-3eab5dc16929",
 		"name": "Purge Assignment Backend API",
 		"description": "Postman collection for Solana MPC Wallet Backend API",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
 		"_exporter_id": "30783372"
 	},
 	"item": [
@@ -22,19 +22,9 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"username\": \"test_user@example.com\",\n  \"password\": \"password123\"\n}"
+							"raw": "{\n\t\"username\": \"harkirat@gmail.com\",\n\t\"password\": \"123123\"\n}"
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/signup",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"signup"
-							]
-						},
+						"url": "{{base_url}}/api/v1/signup",
 						"description": "Create a new user account with MPC wallet generation"
 					},
 					"response": []
@@ -52,7 +42,8 @@
 									"    console.log('Auth token saved:', responseJson.token);",
 									"}"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -66,19 +57,9 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"username\": \"test_user@example.com\",\n  \"password\": \"password123\"\n}"
+							"raw": "{\n\t\"username\": \"harkirat@gmail.com\",\n\t\"password\": \"123123\"\n}"
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/signin",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"signin"
-							]
-						},
+						"url": "{{base_url}}/api/v1/signin",
 						"description": "Authenticate user and get JWT token"
 					},
 					"response": []
@@ -98,17 +79,7 @@
 								"value": "Bearer {{auth_token}}"
 							}
 						],
-						"url": {
-							"raw": "{{base_url}}/api/v1/user",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"user"
-							]
-						},
+						"url": "{{base_url}}/api/v1/user",
 						"description": "Get authenticated user's profile including MPC wallet public key"
 					},
 					"response": []
@@ -128,18 +99,7 @@
 								"value": "Bearer {{auth_token}}"
 							}
 						],
-						"url": {
-							"raw": "{{base_url}}/api/v1/balance/sol",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"balance",
-								"sol"
-							]
-						},
+						"url": "{{base_url}}/api/v1/balance/sol",
 						"description": "Get SOL balance of user's MPC wallet"
 					},
 					"response": []
@@ -147,25 +107,23 @@
 				{
 					"name": "Get Token Balances",
 					"request": {
-						"method": "GET",
+						"method": "POST",
 						"header": [
 							{
 								"key": "Authorization",
 								"value": "Bearer {{auth_token}}"
 							}
 						],
-						"url": {
-							"raw": "{{base_url}}/api/v1/balance/tokens",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"balance",
-								"tokens"
-							]
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"tokenMint\": \"3wzZfQvtUG9riKDTGi2x1YVcpgrrQ13WQxXTJYGo4Hfb\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
 						},
+						"url": "{{base_url}}/api/v1/balance/tokens",
 						"description": "Get SPL token balances of user's MPC wallet"
 					},
 					"response": []
@@ -203,17 +161,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"inputMint\": \"So11111111111111111111111111111111111111112\",\n  \"outputMint\": \"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\",\n  \"inAmount\": 1000000000\n}"
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/quote",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"quote"
-							]
-						},
+						"url": "{{base_url}}/api/v1/quote",
 						"description": "Get swap quote from Jupiter API. Example: SOL to USDC swap for 1 SOL (1000000000 lamports)"
 					},
 					"response": []
@@ -236,17 +184,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"id\": \"{{quote_id}}\"\n}"
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/swap",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"swap"
-							]
-						},
+						"url": "{{base_url}}/api/v1/swap",
 						"description": "Execute a swap using a previously obtained quote ID"
 					},
 					"response": []
@@ -269,17 +207,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"to\": \"A1dVA8adW1XXgcVmLCtbrvbVEVA1n3Q7kNPaTZVonjpq\",\n  \"amount\": 1000000,\n  \"mint\": null\n}"
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/send",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"send"
-							]
-						},
+						"url": "{{base_url}}/api/v1/send",
 						"description": "Send SOL to another address. Amount is in lamports (1 SOL = 1,000,000,000 lamports). Set mint to null for SOL transfers."
 					},
 					"response": []
@@ -302,17 +230,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"to\": \"A1dVA8adW1XXgcVmLCtbrvbVEVA1n3Q7kNPaTZVonjpq\",\n  \"amount\": 1000000,\n  \"mint\": \"9vrmMeozZjHv1XE769WMagUcmKifpVNwS7wknAh66rMy\"\n}"
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/send",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"send"
-							]
-						},
+						"url": "{{base_url}}/api/v1/send",
 						"description": "Send SPL tokens to another address. Specify the token mint address. Note: SPL token transfers are not yet implemented in the backend."
 					},
 					"response": []
@@ -331,17 +249,7 @@
 							"mode": "raw",
 							"raw": ""
 						},
-						"url": {
-							"raw": "{{base_url}}/api/v1/create-test-token",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"create-test-token"
-							]
-						},
+						"url": "{{base_url}}/api/v1/create-test-token",
 						"description": "Send SPL tokens to another address. Specify the token mint address. Note: SPL token transfers are not yet implemented in the backend."
 					},
 					"response": []
@@ -356,18 +264,7 @@
 					"request": {
 						"method": "GET",
 						"header": [],
-						"url": {
-							"raw": "{{base_url}}/api/v1/mpc/health",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"mpc",
-								"health"
-							]
-						},
+						"url": "{{base_url}}/api/v1/mpc/health",
 						"description": "Check the health status of MPC servers (ports 8081, 8082, 8083)"
 					},
 					"response": []
@@ -377,13 +274,9 @@
 	],
 	"auth": {
 		"type": "bearer",
-		"bearer": [
-			{
-				"key": "token",
-				"value": "{{auth_token}}",
-				"type": "string"
-			}
-		]
+		"bearer": {
+			"token": "{{auth_token}}"
+		}
 	},
 	"variable": [
 		{
