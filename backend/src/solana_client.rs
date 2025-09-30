@@ -57,7 +57,10 @@ impl SolanaRpcClient {
     }
 
     /// Get SOL balance for a wallet address
-    pub async fn get_sol_balance(&self, wallet_address: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    pub async fn get_sol_balance(
+        &self,
+        wallet_address: &str,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         let request_body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -65,14 +68,15 @@ impl SolanaRpcClient {
             "params": [wallet_address]
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
             .await?;
 
         let result: serde_json::Value = response.json().await?;
-        
+
         if let Some(balance) = result["result"]["value"].as_u64() {
             info!("SOL balance for {}: {} lamports", wallet_address, balance);
             Ok(balance)
@@ -83,7 +87,10 @@ impl SolanaRpcClient {
     }
 
     /// Get token accounts for a wallet address
-    pub async fn get_token_accounts(&self, wallet_address: &str) -> Result<Vec<TokenAccount>, Box<dyn std::error::Error>> {
+    pub async fn get_token_accounts(
+        &self,
+        wallet_address: &str,
+    ) -> Result<Vec<TokenAccount>, Box<dyn std::error::Error>> {
         let request_body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -99,24 +106,29 @@ impl SolanaRpcClient {
             ]
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
             .await?;
 
         let result: serde_json::Value = response.json().await?;
-        
+
         if let Some(accounts) = result["result"]["value"].as_array() {
             let mut token_accounts = Vec::new();
-            
+
             for account in accounts {
                 if let Ok(token_account) = serde_json::from_value::<TokenAccount>(account.clone()) {
                     token_accounts.push(token_account);
                 }
             }
-            
-            info!("Found {} token accounts for {}", token_accounts.len(), wallet_address);
+
+            info!(
+                "Found {} token accounts for {}",
+                token_accounts.len(),
+                wallet_address
+            );
             Ok(token_accounts)
         } else {
             error!("Failed to get token accounts for {}", wallet_address);
@@ -125,20 +137,23 @@ impl SolanaRpcClient {
     }
 
     /// Get token balances for a wallet (SOL + all tokens)
-    pub async fn get_all_balances(&self, wallet_address: &str) -> Result<(u64, Vec<TokenBalance>), Box<dyn std::error::Error>> {
+    pub async fn get_all_balances(
+        &self,
+        wallet_address: &str,
+    ) -> Result<(u64, Vec<TokenBalance>), Box<dyn std::error::Error>> {
         // Get SOL balance
         let sol_balance = self.get_sol_balance(wallet_address).await?;
-        
+
         // Get token accounts
         let token_accounts = self.get_token_accounts(wallet_address).await?;
-        
+
         let mut token_balances = Vec::new();
-        
+
         for account in token_accounts {
             if let Some(parsed_data) = account.account.data.parsed {
                 if let Some(info) = parsed_data.info {
                     let balance = info.token_amount.amount.parse::<u64>().unwrap_or(0);
-                    
+
                     // Only include tokens with non-zero balance
                     if balance > 0 {
                         token_balances.push(TokenBalance {
@@ -151,8 +166,13 @@ impl SolanaRpcClient {
                 }
             }
         }
-        
-        info!("Wallet {} has {} SOL and {} token types", wallet_address, sol_balance, token_balances.len());
+
+        info!(
+            "Wallet {} has {} SOL and {} token types",
+            wallet_address,
+            sol_balance,
+            token_balances.len()
+        );
         Ok((sol_balance, token_balances))
     }
 }
