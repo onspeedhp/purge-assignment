@@ -41,4 +41,16 @@ impl Store {
 
     Ok(assets)
   }
+
+  pub async fn get_asset_by_mint(&self, mint_address: &str) -> Result<Option<Asset>, AssetError> {
+    let asset = sqlx::query_as::<_, Asset>(
+      "SELECT * FROM assets WHERE mint_address = $1"
+    )
+    .bind(mint_address)
+    .fetch_optional(&self.pool)
+    .await
+    .map_err(|e| AssetError::DatabaseError(e.to_string()))?;
+
+    Ok(asset)
+  }
 }

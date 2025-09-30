@@ -6,32 +6,9 @@ use std::env;
 use store::{Store, user::CreateUserRequest};
 use tracing::{error, info, warn};
 use crate::auth::get_user_id_from_request;
-use frost_mpc::distributed_mpc::{DistributedMPC, MPCServerClient, MPCServerConfig};
+use frost_mpc::solana::SolanaMPCClient;
 use reqwest::Client;
 
-/// Helper function to get wallet info from MPC
-async fn get_wallet_info(user_id: &str) -> Option<(String, String)> {
-    let mpc_client = MPCServerClient::new(MPCServerConfig {
-        id: 1,
-        host: "127.0.0.1".to_string(),
-        port: 8081,
-    });
-
-    let server_user_id = format!("{}_mpc_server_1", user_id);
-    
-    match mpc_client.get_key_share_by_user_id(&server_user_id).await {
-        Ok(key_share) => {
-            // Convert public key to Solana address
-            if let Ok(public_key_bytes) = hex::decode(&key_share.public_key) {
-                if let Ok(pubkey) = solana_sdk::pubkey::Pubkey::try_from(public_key_bytes.as_slice()) {
-                    return Some((pubkey.to_string(), key_share.public_key));
-                }
-            }
-            None
-        }
-        Err(_) => None,
-    }
-}
 
 /// Helper function to subscribe wallet to indexer
 async fn subscribe_wallet_to_indexer(user_id: &str, wallet_address: &str) -> Result<(), String> {
@@ -156,6 +133,17 @@ pub async fn sign_up(
                         }
                         Err(e) => {
                             warn!("⚠️ Failed to subscribe wallet to indexer for user {}: {}", user.id, e);
+                            // Don't fail the signup, just log the warning
+                        }
+                    }
+
+                    // Subscribe wallet to indexer for real-time monitoring
+                    match subscribe_wallet_to_indexer(&user_id, &mpc_wallet_pubkey).await {
+                        Ok(_) => {
+                            info!("✅ Wallet {} subscribed to indexer for user {}", mpc_wallet_pubkey, user_id);
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Failed to subscribe wallet to indexer for user {}: {}", user_id, e);
                             // Don't fail the signup, just log the warning
                         }
                     }
